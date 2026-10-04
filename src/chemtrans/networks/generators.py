@@ -253,8 +253,9 @@ def polymer_ligation(
         required = catalyst is not None and rng.random() < p_cat_required
         for a, b in routes:
             base = ligation_rate * float(np.exp(rng.normal(0.0, 0.5)))
+            reactants = {index[a]: 1 + (a == b)}
             lig = Reaction(
-                reactants={index[a]: 1, index[b]: 1},
+                reactants=reactants,
                 products={index[prod]: 1},
                 rate=0.0 if required else base,
                 cat_rate=base * cat_boost,
@@ -265,7 +266,7 @@ def polymer_ligation(
             reactions.append(lig)
             reactions.append(Reaction(
                 reactants={index[prod]: 1},
-                products={index[a]: 1, index[b]: 1},
+                products={index[a]: 1 + (a == b)},
                 rate=cleavage_rate * float(np.exp(rng.normal(0.0, 0.5))),
                 k_sat=k_sat,
             ))

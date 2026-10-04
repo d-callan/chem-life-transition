@@ -311,3 +311,84 @@ the transition may not have been crossed; inconclusive.
    (trivial) vs extended autocatalytic sets (interesting).
 4. Gillespie/SSA on polymer nets for stochastic nucleation + extinction
    (P(nucleation) as an order parameter for the exclusive regime).
+
+# ============================ MILESTONE 5 ============================
+# 2-D critical manifold test + Gillespie SSA.
+
+## 2026-10-04 — stoichiometry bugfix
+
+`A+A -> AA` ligations were recorded as {A:1} -> {AA:1} (dict literal
+collapsed the duplicate key) — consumed only ONE A. Fixed: reactants and
+cleavage products now get nu=2 for a==b splits. random_crn unaffected
+(samples without replacement). Fast-propensity path extended to expand
+nu copies into the padded index array (x[i]*x[i] == x[i]**2), so nu=2
+reactions keep the vectorized path. Verified bit-identical vs slow loop.
+
+## 2026-10-04 — gillespie.py implemented (direct SSA)
+
+Counts-space direct method: reaction propensities = net.propensity(n/V)*V,
+food influx = feed_rate*V/species, dilution = per-molecule death.
+Validated: food-only mean 994 vs expected 1000; rate=0 catalyst-required
+reaction NEVER nucleates (exact chicken-and-egg at finite copy number);
+self-rep channel with small spontaneous rate nucleates and grows.
+Tests in tests/test_milestone5.py (4 passing).
+
+## 2026-10-04 — THE 2-D MANIFOLD RESULT (headline)
+
+**Cmd:** `python experiments/manifold_2d.py --p-cat-grid 0.2 0.4 0.6 0.8 --p-info-grid 0.0 0.25 0.5 0.75 1.0 --n-reps 4 --n-ligations 200 --n-bootstrap 50 --out data/manifold_2d.jsonl`
+
+80 runs (4x5 grid x 4 reps), polymer_ligation, alphabet=2 max_len=10
+food_len=2 k_sat=1.0 feed=5 dilution=1 t_max=60.
+
+**Result — hit-rate tables P(observable ON), rows=p_cat cols=p_info:**
+
+```
+phi>0.1:                S>0.5:                  H>0.5:
+    .00 .25 .50 .75 1.0     .00 .25 .50 .75 1.0     .00 .25 .50 .75 1.0
+0.2  0   0   0   0  .5  0.2  0   1   1   1   1  0.2  0  .5   1   1   1
+0.4  0   0   1   1   1  0.4 .75  1   1   1   1  0.4  0  .5   1   1   1
+0.6  0  .5   1   1   1  0.6 .25  1   1   1   1  0.6  0 .25   1   1   1
+0.8 .5   1   1   1   1  0.8  1   1   1   1   1  0.8  0   0   1   1   1
+
+R0>1 & n_core>0 ~ S-map (any motif suffices). A>0.5 & E>0.3 only in the
+upper-right corner (need BOTH high). tail_mass always on (degenerate).
+```
+
+**Boundary fits (p_info needed at p_cat = 0.2/0.4/0.6/0.8):**
+- phi:    0.88, 0.56, 0.24, —   -> CURVED boundary, substitutability
+- H:      ~0.25 flat across p_cat -> pure information-axis threshold
+- S,R0,core: ~0.0 (on everywhere except the no-info low-connectivity corner)
+- A,E:    only p_cat>=0.6-0.8 AND p_info>=0.5
+
+**Interpretation:**
+1. The boundaries are clearly NOT one shared curve — Model B (single
+   transition where everything co-emerges) is refuted in this regime.
+2. The natural ordering along any path from origin to corner:
+   {S,R0,core: any autocatalytic motif} -> {H: template flux, p_info~.25}
+   -> {phi: closure flux, needs p_cat AND p_info} -> {A,E: both high}.
+   This is the CASCADE/NESTED structure (Models A/C).
+3. **The standout cell p_cat=0.8, p_info=0: phi~0.5, cores exist,
+   H=0 — organized autocatalytic chemistry with ZERO heredity.**
+   Dense random catalysis closes RAFs without templates. Organization
+   without information is a real regime — the decoupling the
+   experiment was designed to find.
+4. phi's boundary slopes DOWN with p_cat: connectivity and information
+   are SUBSTITUTABLE for closure — consistent with a manifold like
+   p_cat*(a + b*p_info) or similar, but each observable sits on its
+   own surface, not the shared one.
+5. Honest caveat: these are activation boundaries of observable
+   thresholds (smooth logistic surfaces), not proven singularities.
+   S/R0 are structurally "easy" (any motif). The strongest claim:
+   the properties have DIFFERENT activation surfaces in parameter
+   space, so a 1-D sweep's A-vs-B verdict is slice-dependent —
+   resolving A vs B requires the 2-D picture, which favors cascade/nested.
+
+## Open threads
+
+1. Exclusive/nucleation regime on polymer nets: p_cat_required=1 +
+   no seeding — is there bistability along p_info too?
+2. Which species carry organized flux — short self-reps or extended
+   autocatalytic sets? (trivial vs interesting organization)
+3. Tau-leaping for SSA on polymer-scale nets; P(nucleation) observable.
+4. random_crn 2-D analog: p_cat x p_cat_required or p_cat x feed_rate —
+   does its manifold also show substitutable axes?

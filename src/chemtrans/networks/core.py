@@ -153,9 +153,7 @@ class ReactionNetwork:
             return self._prop_cache or None
         k_sats = {r.k_sat for r in self.reactions}
         ok = len(k_sats) == 1 and all(
-            len(r.reactants) <= 2
-            and all(nu == 1 for nu in r.reactants.values())
-            for r in self.reactions
+            sum(r.reactants.values()) <= 2 for r in self.reactions
         )
         if not ok:
             self._prop_cache = False
@@ -168,8 +166,11 @@ class ReactionNetwork:
         rate = np.empty(self.n_reactions)
         cat_rate = np.empty(self.n_reactions)
         for r, rxn in enumerate(self.reactions):
-            for k, s in enumerate(rxn.reactants):
-                R[r, k] = s
+            k = 0
+            for s, nu in rxn.reactants.items():
+                for _ in range(nu):  # nu=2 -> x[i]*x[i], same as x[i]**2
+                    R[r, k] = s
+                    k += 1
             for c in rxn.catalysts:
                 C[r, c] += 1.0
             rate[r] = rxn.rate
