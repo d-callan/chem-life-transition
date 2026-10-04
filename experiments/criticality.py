@@ -54,13 +54,14 @@ def bimodality_coefficient(vals) -> float:
 
 def make_net(args, lam, seed):
     if args.generator == "polymer_ligation":
-        kw = dict(alphabet_size=args.alphabet_size,
-                  max_length=args.max_length,
-                  n_ligations=args.n_reactions // 2,
-                  p_cat=args.p_cat_fixed, p_info=args.p_info,
-                  p_selfrep=args.p_selfrep,
-                  p_cat_required=args.p_cat_required,
-                  k_sat=args.k_sat, food_len=args.food_len, seed=seed)
+        kw = {"alphabet_size": args.alphabet_size,
+              "max_length": args.max_length,
+              "n_ligations": args.n_reactions // 2,
+              "p_cat": args.p_cat_fixed, "p_info": args.p_info,
+              "p_selfrep": args.p_selfrep,
+              "p_cat_required": args.p_cat_required,
+              "k_sat": args.k_sat, "food_len": args.food_len,
+              "seed": seed}
         kw[args.lambda_param] = lam
         return polymer_ligation(**kw)
     if args.lambda_param != "p_cat":

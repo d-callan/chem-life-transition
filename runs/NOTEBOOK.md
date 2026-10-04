@@ -455,3 +455,40 @@ polymer chemistry we'd need exclusive sets closed under cleavage
   measure it is level-(b): a landscape/percolation transition where
   new attractor TYPES become reachable. Both are legitimate physics
   but they are different objects, and claims should name which.
+
+## 2026-10-04 — SSA restores the nucleation barrier (finite copy number)
+
+Question: does the cleavage backdoor need artificial blocking, or does
+discreteness close it naturally? Ran exclusive-regime polymer nets
+(p_cat_required=1.0, all organizing unseeded in ODE) under direct SSA,
+seeded (ODE steady state x V) vs unseeded (food only), V in {0.5,1,2,5},
+t_max=150.
+
+**Result (phi at trajectory end, 6 nets x 4 V x seeded/unseeded):**
+- 4909 @ V=1: CLEAN BISTABLE (unseeded 0.000 / seeded 0.181) — the
+  fragment never materializes as a molecule; window closes by V=2.
+- 9100: both dead at V<=1 (demographic extinction of ~1-molecule
+  species), organizes unseeded at V>=2 — window below its reach.
+- 12127: dead at EVERY V — its ODE phi=0.151 'organized' state lived
+  on sub-molecular concentrations: a continuum phantom, never existed.
+- 6500: organizes at all V — fragment door wide open in this net.
+- 9527, 11118: marginal/noisy.
+
+**Interpretation:**
+1. Finite copy number DOES create bistability where the ODE showed
+   none — the barrier is real physics, bounded in a VOLUME WINDOW:
+   below it, demographic noise kills ~1-molecule organized species;
+   above it, the fragment door reopens. No artificial blocking needed;
+   blocking would model the wrong thing.
+2. SSA is the arbiter of genuine organization: some ODE 'organized'
+   states are phantoms living at sub-molecular concentrations.
+   Caveat on ALL prior phi measurements at this scale — a fraction
+   are probably phantom. Worth a phi_SSA audit of earlier regimes.
+3. The measurable knob is door WIDTH, not a binary block:
+   cleavage_rate scales the fragment-supply flux; P(nucleation)
+   vs fragment flux maps where the barrier actually sits.
+
+**Open thread promoted:** P(nucleation) as an order parameter under
+SSA — sweep (V, cleavage_rate) for exclusive polymer nets; the
+bistable window's boundaries ARE the answer to 'how much suppression
+of the fragment door does the barrier require'.
