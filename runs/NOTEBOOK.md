@@ -673,3 +673,57 @@ nucleation barrier (exists only at finite copy number in sparse
 sequence space) + graded differentiation of life-properties beyond
 it. Properties are not born at their own transitions; they accumulate
 as functions of information content once organization exists.
+
+## 2026-10-04 — caveat: "alphabet size" is a proxy, not the mechanism
+
+What actually controls the fragment door is the DENSITY of populated
+sequence space: the fraction of strings realizable by the generator
+that contain a needed motif as a substring (potential cleavage
+sources). Alphabet size raises sparsity exponentially (2^L vs 3^L vs
+4^L possible strings at fixed n_ligations), which is why it worked —
+but a real planet could have a large monomer alphabet with locally
+dense chemistry (one favored polymerization pathway) or a small
+alphabet with sparse effective coverage. The load-bearing variable is
+populated-fraction-of-motif-space, not letter count. Physical
+correspondence: real prebiotic monomer pools (~4-15 types, per
+Miller-Urey/meteorite evidence) sit far into the sparse regime —
+the barrier is likely STRONGER in real chemistry than the toy.
+
+TODO: measure motif-precursor density directly (fraction of species
+containing each RAF core member as substring) instead of relying on
+alphabet as proxy.
+
+## 2026-10-04 — alphabet scan 2/3/4 + a discovered confound
+
+**Cmd:** `for ab in 2 3 4: python experiments/first_passage.py
+--seeds 1 2 3 --alphabet-size $ab --volumes 1.0 5.0 --n-reps 3
+--out data/fp_scan_ab$ab.jsonl` (3 x 72 runs)
+
+**Results (tau_nuc / tau_ext):**
+- ab=2: s1,s3 trivially organized (tau=0); s2 real nucleation tau~5-37.
+  No barrier.
+- ab=3: s2,s3 bistable everywhere (nuc=inf, ext=inf/360); s1 partial
+  (nuc 25-323, ext 0-20). Barrier exists, network-dependent.
+- ab=4: ALL unseeded trajectories already organized at t=0 (tau=0
+  everywhere) — the window collapsed, but NOT via faster fragment
+  nucleation.
+
+**The confound (why ab=4 went backward):** food_len=2 means
+|food| = ab + ab^2: 6 -> 12 -> 20 food species. RAF audit:
+ab4 nets carry 40-53 food-catalyzed RAF reactions vs 0-40 at ab3,
+0-19 at ab2. Raising the alphabet sparsifies motif space (closes the
+fragment door) but ALSO enriches the broth (opens the feed door).
+The scan conflated two axes.
+
+**What this means:** the clean phase boundary is in DENSITY of
+populated motif space relative to food degeneracy — not alphabet
+per se. To scan it cleanly: fix |food| (e.g. food_len=1 or a
+fixed-size food subset) while varying alphabet, OR use the planned
+motif-precursor-density metric as the control variable. Also
+reinforces the need for a nontrivial-phi variant that excludes
+organization living entirely inside the food set.
+
+**Status of the phase-boundary claim:** ab=2 dense -> no barrier,
+ab=3 sparse-enough -> real bistable windows in 2/3 nets stands.
+The ab=4 datapoint is contaminated by the food-richness confound,
+not evidence against the boundary.
