@@ -7,5 +7,6 @@ venv/
 data/*.jsonl
 data/*.parquet
 data/*.csv
+data/*.png
 !data/.gitkeep
 .pytest_cache/

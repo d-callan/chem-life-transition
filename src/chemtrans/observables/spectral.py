@@ -14,11 +14,20 @@ import numpy as np
 from ..networks.core import ReactionNetwork
 
 
+def _eigvals_sorted(net: ReactionNetwork) -> np.ndarray:
+    K = net.catalysis_matrix()
+    if K.size == 0:
+        return np.array([0.0])
+    ev = np.abs(np.linalg.eigvals(K))
+    return np.sort(ev)[::-1]
+
+
 def spectral_radius(net: ReactionNetwork) -> float:
     """Largest-magnitude eigenvalue of the catalysis matrix K."""
-    raise NotImplementedError
+    return float(_eigvals_sorted(net)[0])
 
 
 def spectral_gap(net: ReactionNetwork) -> float:
     """Gap between leading and next eigenvalue — sharpens near transitions."""
-    raise NotImplementedError
+    ev = _eigvals_sorted(net)
+    return float(ev[0] - ev[1]) if len(ev) > 1 else 0.0

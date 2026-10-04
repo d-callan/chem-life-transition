@@ -28,6 +28,10 @@ class Reaction:
     catalysts: species indices that accelerate this reaction (not consumed)
     rate: mass-action rate constant (uncatalyzed)
     cat_rate: additional rate constant per unit catalyst concentration
+
+    Convention: rate == 0 with a nonempty catalysts list means the reaction
+    REQUIRES a catalyst — it cannot fire spontaneously. The RAF/closure
+    analysis uses this to decide which reactions are conditionally enabled.
     """
 
     reactants: dict[int, int]
