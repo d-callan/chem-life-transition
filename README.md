@@ -37,6 +37,8 @@ experiments/   sweep_lambda.py          phase diagram base dataset
                transition_discrimination.py   Model A vs B vs C — headline test
 runs/          NOTEBOOK.md — lab notebook: every run, command, result, reading
 docs/          conversation.md — origin conversation (the spec)
+               vocabulary.md — glossary: physics/chem terms vs. biological
+               meanings ("nucleus" here ≠ the organelle). Read first.
 data/          run outputs (jsonl, gitignored)
 notebooks/     plots / exploration
 ```
