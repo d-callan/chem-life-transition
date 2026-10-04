@@ -598,3 +598,78 @@ stays chemical until a rare fluctuation nucleates organization — and
 once organized, it is stable against demographic extinction. That is
 the qualitative structure the "chemistry -> life as a first-order
 nonequilibrium transition" picture requires.
+
+## 2026-10-04 — SYNTHESIS: where the project stands vs. the original questions
+
+**Q: can chemistry -> biochemistry be modeled as a nonequilibrium
+phase transition / bifurcating dynamical system?**
+YES, with two qualifications that are themselves findings:
+1. The bifurcation is invisible in the continuum limit. ODE leaks
+   through the fragment door (any positive flux grows); the
+   bistability only exists at finite copy number (SSA). Mean-field
+   misses metastability — a real caution for ODE models of
+   origin-of-life chemistry.
+2. The barrier is conditional on sequence-space sparsity: dense
+   alphabet=2 -> crossover (tau_nuc ~ 2-30); sparse alphabet=3 ->
+   first-order bistable window (tau_nuc, tau_ext -> inf). Whether
+   there IS a transition is itself a property of the chemistry's
+   combinatorics.
+
+**Q: Model A (cascade) vs B (single) vs C (nested)?**
+- B effectively REFUTED: 2-D manifold shows distinct activation
+  surfaces; p_cat=0.8/p_info=0 gives organized phase with H=0 —
+  impossible under a single coupled transition.
+- A vs C: the framing needs a fix. Two different objects:
+  (a) the DYNAMICAL transition — the first-order nucleation barrier;
+      essentially ONE of these exists.
+  (b) observable ACTIVATION SURFACES — where H/E/assembly/etc. turn
+      on; genuinely staggered, partly because single-molecule
+      properties (H) differ in kind from collective ones (phi).
+- Best current model: clarified C — one deep first-order transition
+  opens an organized regime; the life-properties stratify onto
+  secondary surfaces inside it. Not one switch (B), not a strict
+  cascade (ordering isn't universal — H can precede phi).
+  One-liner: a first-order nucleation event opens a regime, and
+  'life' is assembled property-by-property inside it.
+
+**Open question that decides residual ambiguity:** are the secondary
+transitions (H, E, assembly turning on INSIDE the organized phase)
+sharp or graded? If sharp -> C confirmed with true sub-transitions;
+if smooth -> a fourth model: one sharp barrier + graded
+differentiation.
+
+**Next run:** conditional sweep — alphabet-3 polymer nets, fixed
+p_cat=0.8, dense p_info grid, all-organized initial conditions;
+measure per-observable curves and test sharpness of secondary
+thresholds where phi is already on.
+
+## 2026-10-04 — conditional sweep: secondary transitions are GRADED
+
+**Cmd:** `python experiments/transition_discrimination.py --generator
+polymer_ligation --alphabet-size 3 --max-length 10 --lambda-param
+p_info --p-cat-fixed 0.8 --p-cat 0.0 0.1 ... 1.0 --n-reps 6
+--p-cat-required 0.5 --p-selfrep 0.3 --food-len 2 --t-max 150
+--out data/discrim_secondary_ab3.jsonl` (66 runs)
+
+**Result:** phi on from p_info~0.1-0.2 (0.017->0.18->0.25, rising to
+~0.48); S saturated ~1.0 everywhere except p_info=0; R0 ramps
+1.4->80; E ramps 0.02->0.37; H ramps ~linearly 0.03->1.00. No
+secondary observable shows a sharp internal jump. The reported
+staggered lambda_c's (0.0/0.1/0.2/0.4/0.7/0.8/1.0) are CUTOFF
+ARTIFACTS on smooth ramps — where each graded curve happens to cross
+its threshold, not distinct transitions.
+
+**Key caveat:** H ~ p_info is near-TAUTOLOGICAL: H = template-matched
+fraction of catalyzed flux; p_info = template-matched fraction of
+catalysts. H reads the dial. As a transition probe it's uninformative
+along its own axis; its value is as the orthogonality control
+(phi-organized, H=0 states exist).
+
+**Verdict on the residual A/C question:** inside the organized phase
+properties differentiate GRADED, not in discrete jumps. Combined
+with the alphabet-3 bistability result, the best current model is a
+FOURTH one, not in the original A/B/C list: ONE sharp first-order
+nucleation barrier (exists only at finite copy number in sparse
+sequence space) + graded differentiation of life-properties beyond
+it. Properties are not born at their own transitions; they accumulate
+as functions of information content once organization exists.
