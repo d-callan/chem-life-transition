@@ -5,9 +5,9 @@ simulate each to steady state, and record all order parameters.
 
 Output schema (one jsonl row per run):
     run_id, generator, generator_params, seed,
-    lambda_components {p_cat, feed_rate, dilution_rate},
+    lambda {p_cat, feed_rate, dilution_rate},
     rho_K, phi, A, assembly {mean, tail_mass, hist},
-    n_core_species, steady_state_reached
+    n_core_species, steady_state_reached, runaway
 
 This dataset is the input to analysis.critical_points and the
 Model A/B/C discrimination test.
@@ -19,22 +19,14 @@ Usage:
 import argparse
 import json
 import sys
-import warnings
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from chemtrans.dynamics.ode import simulate
+from chemtrans.measure import measure_run
 from chemtrans.networks.generators import random_crn
-from chemtrans.observables.assembly import assembly_distribution, path_assembly_index
-from chemtrans.observables.closure import (
-    autocatalytic_activity,
-    organizational_closure,
-    raf_core,
-)
-from chemtrans.observables.spectral import spectral_radius
 
 
 def run_one(p_cat, feed_rate, dilution_rate, args, seed):
@@ -47,7 +39,6 @@ def run_one(p_cat, feed_rate, dilution_rate, args, seed):
         p_cat_required=args.p_cat_required,
         seed=seed,
     )
-    rho_k = spectral_radius(net)
     row = {
         "generator": "random_crn",
         "generator_params": {
@@ -60,47 +51,8 @@ def run_one(p_cat, feed_rate, dilution_rate, args, seed):
         "seed": seed,
         "lambda": {"p_cat": p_cat, "feed_rate": feed_rate,
                    "dilution_rate": dilution_rate},
-        "rho_K": rho_k,
     }
-    try:
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            _, X = simulate(
-                net, (0.0, args.t_max),
-                feed_rate=feed_rate, dilution_rate=dilution_rate,
-            )
-            msgs = [str(x.message) for x in w]
-            row["runaway"] = any("runaway" in m for m in msgs)
-            row["steady_state_reached"] = not any(
-                "may not be steady" in m or "runaway" in m for m in msgs
-            )
-    except RuntimeError as e:
-        row["steady_state_reached"] = False
-        row["error"] = str(e)
-        return row
-
-    # last finite state (all-NaN rows follow a runaway event)
-    x_ss = X[~np.isnan(X).any(axis=1)][-1]
-    flux = net.propensity(x_ss)
-    A_idx = path_assembly_index(net)
-    edges, hist = assembly_distribution(net, x_ss)
-    finite = A_idx[np.isfinite(A_idx)]
-
-    row.update({
-        "phi": organizational_closure(net, flux),
-        "A": autocatalytic_activity(net, x_ss),
-        "n_core_species": len(raf_core(net)),
-        "assembly": {
-            "mean": float(np.average(finite, weights=x_ss[np.isfinite(A_idx)] + 1e-30))
-                if len(finite) else None,
-            "max": float(finite.max()) if len(finite) else None,
-            "tail_mass": float(
-                hist[len(hist) // 2:].sum() / max(hist.sum(), 1e-30)
-            ) if len(hist) > 1 else 0.0,
-            "hist_edges": edges.tolist(),
-            "hist": hist.tolist(),
-        },
-    })
+    row.update(measure_run(net, feed_rate, dilution_rate, t_max=args.t_max))
     return row
 
 
@@ -111,10 +63,10 @@ def main():
     ap.add_argument("--n-species", type=int, default=60)
     ap.add_argument("--n-reactions", type=int, default=120)
     ap.add_argument("--n-food", type=int, default=5)
+    ap.add_argument("--max-reactants", type=int, default=2)
     ap.add_argument("--n-reps", type=int, default=8)
     ap.add_argument("--p-cat", type=float, nargs="+",
                     default=np.linspace(0.0, 0.5, 11).tolist())
-    ap.add_argument("--max-reactants", type=int, default=2)
     ap.add_argument("--p-cat-required", type=float, default=0.5)
     ap.add_argument("--feed-rate", type=float, default=1.0)
     ap.add_argument("--dilution-rate", type=float, default=0.1)
@@ -134,6 +86,7 @@ def main():
                 row = run_one(p_cat, args.feed_rate, args.dilution_rate,
                               args, seed)
                 row["run_id"] = f"s{seed}_p{p_cat:.3f}"
+                row.pop("x_ss", None)  # don't write full state to jsonl
                 f.write(json.dumps(row) + "\n")
                 n_done += 1
                 print(f"\r{n_done}/{total}  p_cat={p_cat:.3f} rep={rep}  "
