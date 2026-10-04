@@ -32,29 +32,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from chemtrans.analysis.critical_points import align_critical_points
 from chemtrans.measure import measure_run
-from chemtrans.networks.generators import random_crn
+from chemtrans.networks.generators import polymer_ligation, random_crn
 
-OBSERVABLES = ["phi", "A", "S", "R0", "E",
+OBSERVABLES = ["phi", "A", "S", "R0", "E", "H",
                "assembly.tail_mass", "n_core_species"]
+
+
+def make_net(args, lam, seed):
+    """lam is the swept control parameter (--lambda-param)."""
+    if args.generator == "polymer_ligation":
+        kw = dict(
+            alphabet_size=args.alphabet_size, max_length=args.max_length,
+            n_ligations=args.n_reactions // 2,
+            p_cat=args.p_cat_fixed, p_info=args.p_info,
+            p_selfrep=args.p_selfrep,
+            p_cat_required=args.p_cat_required,
+            k_sat=args.k_sat, food_len=args.food_len, seed=seed,
+        )
+        kw[args.lambda_param] = lam
+        return polymer_ligation(**kw)
+    if args.lambda_param != "p_cat":
+        raise ValueError("--lambda-param=p-info only applies to "
+                         "polymer_ligation")
+    return random_crn(
+        n_species=args.n_species, n_reactions=args.n_reactions,
+        p_cat=lam, n_food=args.n_food,
+        max_reactants=args.max_reactants,
+        p_cat_required=args.p_cat_required, k_sat=args.k_sat,
+        exclusive_catalysis=args.exclusive_catalysis,
+        seed=seed,
+    )
 
 
 def run_ensemble(args):
     rows = []
-    total = len(args.p_cat) * args.n_reps
+    total = len(args.lam_grid) * args.n_reps
     done = 0
-    for p_cat in args.p_cat:
+    for lam in args.lam_grid:
         for rep in range(args.n_reps):
-            seed = args.seed + rep * 1009 + hash(round(p_cat, 6)) % 997
-            net = random_crn(
-                n_species=args.n_species, n_reactions=args.n_reactions,
-                p_cat=p_cat, n_food=args.n_food,
-                max_reactants=args.max_reactants,
-                p_cat_required=args.p_cat_required, k_sat=args.k_sat,
-                exclusive_catalysis=args.exclusive_catalysis,
-                seed=seed,
-            )
-            row = {"p_cat": p_cat, "seed": seed,
-                   "run_id": f"s{seed}_p{p_cat:.3f}",
+            seed = args.seed + rep * 1009 + hash(round(lam, 6)) % 997
+            net = make_net(args, lam, seed)
+            row = {"lam": lam, "lambda_param": args.lambda_param,
+                   "seed": seed,
+                   "run_id": f"{args.generator}_s{seed}_p{lam:.3f}",
+                   "generator": args.generator,
                    "exclusive_catalysis": args.exclusive_catalysis}
             row.update(measure_run(
                 net, args.feed_rate, args.dilution_rate,
@@ -63,7 +84,7 @@ def run_ensemble(args):
             ))
             rows.append(row)
             done += 1
-            print(f"\r{done}/{total} p_cat={p_cat:.2f} rep={rep} "
+            print(f"\r{done}/{total} {args.lambda_param}={lam:.2f} rep={rep} "
                   f"phi={row.get('phi', float('nan')):.3f}",
                   end="", flush=True)
     print()
@@ -71,7 +92,9 @@ def run_ensemble(args):
 
 
 def discriminate(df: pd.DataFrame, args) -> dict:
-    est, pairs = align_critical_points(df, OBSERVABLES,
+    observables = [o for o in OBSERVABLES
+                   if o.split(".")[0] in df.columns]
+    est, pairs = align_critical_points(df, observables, lambda_col="lam",
                                        n_bootstrap=args.n_bootstrap)
     print("\n=== lambda_c estimates (bootstrap 95% CI) ===")
     print(est.to_string(index=False))
@@ -87,8 +110,8 @@ def discriminate(df: pd.DataFrame, args) -> dict:
     nested = {}
     if len(organized) >= args.n_reps * 3:
         sub_est, _ = align_critical_points(
-            organized, [o for o in OBSERVABLES if o != "phi"],
-            n_bootstrap=args.n_bootstrap)
+            organized, [o for o in observables if o != "phi"],
+            lambda_col="lam", n_bootstrap=args.n_bootstrap)
         nested = sub_est.set_index("observable")["lambda_c"].to_dict()
         print("\n=== Model C check: critical pts within organized phase ===")
         print(sub_est.to_string(index=False))
@@ -115,13 +138,32 @@ def discriminate(df: pd.DataFrame, args) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="data/discrimination.jsonl")
+    ap.add_argument("--generator", choices=["random_crn", "polymer_ligation"],
+                    default="random_crn")
+    ap.add_argument("--alphabet-size", type=int, default=3)
+    ap.add_argument("--max-length", type=int, default=9)
     ap.add_argument("--n-species", type=int, default=40)
     ap.add_argument("--n-reactions", type=int, default=200)
     ap.add_argument("--n-food", type=int, default=8)
     ap.add_argument("--max-reactants", type=int, default=1)
-    ap.add_argument("--p-cat", type=float, nargs="+",
-                    default=np.linspace(0.1, 0.4, 7).tolist())
+    ap.add_argument("--p-cat", type=float, nargs="+", dest="lam_grid",
+                    default=np.linspace(0.1, 0.4, 7).tolist(),
+                    help="grid of swept values (kept named --p-cat for "
+                         "back-compat; see --lambda-param)")
+    ap.add_argument("--lambda-param", choices=["p_cat", "p_info"],
+                    default="p_cat",
+                    help="which generator knob the grid sweeps")
+    ap.add_argument("--p-cat-fixed", type=float, default=0.5,
+                    help="polymer p_cat when sweeping p_info")
     ap.add_argument("--p-cat-required", type=float, default=0.5)
+    ap.add_argument("--p-info", type=float, default=0.7,
+                    help="polymer_ligation: fraction of catalysts that are "
+                         "template-matched vs random (information channel)")
+    ap.add_argument("--p-selfrep", type=float, default=0.3,
+                    help="polymer: fraction of informational catalysts that "
+                         "are exact self-templates (cat == product)")
+    ap.add_argument("--food-len", type=int, default=2,
+                    help="polymer: strings with len <= food_len are food")
     ap.add_argument("--k-sat", type=float, default=None,
                     help="Michaelis-Menten saturation conc; None = unbounded mass-action")
     ap.add_argument("--exclusive-catalysis", action="store_true")

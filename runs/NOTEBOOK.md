@@ -201,3 +201,113 @@ carrier) — polymer_ligation territory.
 4. Exclusive-catalysis regime changes the whole experiment: unseeded never
    organizes → for that regime the discrimination sweep should seed runs
    (or measure P(nucleation) instead of P(organized)).
+
+# ============================ MILESTONE 4 ============================
+# Polymer/string chemistry: species as sequences, ligation/cleavage,
+# template catalysis, true assembly index, heredity observable H.
+
+## 2026-10-04 — polymer_ligation redesign (three iterations)
+
+**Problem found:** first polymer implementation produced essentially no
+RAF cores (n_core=0 in ~20 networks across densities), so all dynamics
+probes were dead (phi=0, S=0) and the first discrimination probe's
+"Model A" verdict was sparse-data noise. Root causes identified and fixed:
+
+1. **One ligation route per product.** Each string had a single recorded
+   (a,b) split; a self-rep catalyst closes a RAF only if THAT split's
+   reactants are food/core-produced (prob ~ p_cat^depth — never).
+   FIX: enumerate every split of every product (a+b->ab forall splits),
+   catalyst assigned per PRODUCT (template matching is a property of
+   what's assembled). Cleavage = all-splits hydrolysis. This is more
+   honest chemistry anyway — a string can form by any split.
+
+2. **No self-replicators.** Template catalysts were chosen among
+   SUPERSTRINGS of the product only (longer strings containing the
+   motif) — RAF impossible (catalyst needs even longer precursors).
+   FIX: `p_selfrep` knob — fraction of informational catalysts that are
+   exact self-templates (cat == product, the minimal replicator RAF);
+   remainder are kin (super- OR substring — bidirectional sequence
+   sharing, both count as informational for H).
+
+3. **Pool too sparse at short lengths.** Uniform pair-sampling over a
+   growing pool makes monomer+monomer ligations rare.
+   FIX: length-biased ligation sampling (~1/len) + `food_len` knob
+   (strings with len <= food_len are food; food_len=2 = "rich broth").
+
+4. **p_info knob added** (the actual deliverable): p_cat = catalytic
+   connectivity, p_info = fraction of catalysts that are
+   template-matched vs random. H≈1 by construction before; now H varies
+   0->1 with p_info and can decouple from phi.
+
+**Result after fix (probe):**
+`polymer_ligation(alphabet=2, max_len=10, n_lig=200, p_cat=0.5, k_sat=1.0)`
+RAF cores: food_len=1 -> 2/8 networks (sizes 0,1,0,0,1,0,0,0);
+           food_len=2 -> 8/8 networks (sizes 1,1,7,32,14,2,7,29).
+Networks ~500 species / ~6300 reactions.
+
+## 2026-10-04 — propensity vectorization + sparse matrices
+
+Polymer nets (6300 rxns) made the Python-loop propensity the bottleneck:
+52.9s per t_max=60 sim. Fixes: vectorized fast path in
+ReactionNetwork.propensity (padded reactant-index array + catalyst CSR
+matrix; falls back to loop for >2 reactants / nu!=1 / mixed k_sat —
+verified bit-identical to slow path), stoichiometry S as csr in ode.simulate.
+Result: ~0.4-1s per LSODA sim (~50-100x). Also fixed: evolvability_proxy
+Reaction copies were dropping k_sat.
+
+**Probe:** `measure_run` over p_info x p_cat (food_len=2):
+```
+p_info=0.0: phi=0.000 H~0.01  S=0     n_core=0   (both p_cat)
+p_info=0.3: phi<=0.001 H~0.1-0.9 S~0-0.999 n_core 0-1
+p_info=0.7: phi 0.23-0.33 H 0.72-0.81 S=0.999 R0~1.2-1.3 n_core 12-29
+p_info=1.0: phi 0.05-0.36 H 0.09-0.75 S=0.999 R0~1.5-1.7 n_core 25
+```
+~5s per run incl. persistence. NOTE: random catalysis alone (p_info=0)
+never organizes — template catalysis does the organizational work here.
+
+## 2026-10-04 — polymer discrimination probes (the M4 headline)
+
+**Cmd A:** `python experiments/transition_discrimination.py --generator polymer_ligation --lambda-param p_info --p-cat 0.0 0.1 0.2 0.3 0.5 0.7 1.0 --p-cat-fixed 0.5 --alphabet-size 2 --max-length 10 --n-reactions 400 --food-len 2 --k-sat 1.0 --feed-rate 5.0 --dilution-rate 1.0 --t-max 60 --n-reps 6 --n-bootstrap 50 --out data/discrim_polymer_pinfo.jsonl`
+
+**Result A (sweeping p_info):** phi: all 0 @ p_info<=0.1; bimodal
+@0.2-0.3 (0 / 0.1-0.33); organized @>=0.5 (0.03-0.56). lc estimates:
+S 0.2, H 0.2 << phi 0.5, A 0.5, R0 0.5 << E 0.7, tail_mass 1.0, n_core 1.0.
+frac_pairs_aligned = 0.286 -> VERDICT: Model A (staggered cascade).
+Model C check also found internal critical pts in organized subset
+(S 0.2; R0/E/H ~0.7; n_core 1.0) — consistent with nested structure.
+
+**Cmd B:** `python experiments/transition_discrimination.py --generator polymer_ligation --lambda-param p_cat --p-cat 0.2 0.4 0.6 0.8 --p-info 0.7 --alphabet-size 2 --max-length 10 --n-reactions 400 --food-len 2 --k-sat 1.0 --feed-rate 5.0 --dilution-rate 1.0 --t-max 60 --n-reps 4 --n-bootstrap 30 --out data/discrim_polymer_pcat.jsonl`
+
+**Result B (sweeping p_cat):** phi rises gradually 0.01->~0.3 over the
+whole grid; ALL observables' lc at grid edge 0.8 except S=0.2.
+frac_aligned = 0.75 -> VERDICT: Model B — but lc AT the boundary means
+the transition may not have been crossed; inconclusive.
+
+**Interpretation:** the striking thing is the AXIS DEPENDENCE.
+- Sweeping p_info: apparent staged ordering — lone self-replicators
+  (S,H early ~0.2) precede collective closure (phi,A,R0 ~0.5), which
+  precedes complexity/evolvability (~0.7-1.0). Physically sensible:
+  a single self-template replicator maintains itself and copies
+  sequence info before collectively-autocatalytic cores exist.
+- Sweeping p_cat: everything rides together (when it moves at all).
+- S precedes closure in BOTH sweeps — S=0.999 whenever ANY self-rep
+  exists, so its threshold is structurally lower, not noise.
+- Honest caveat: if organization lives on a 2-D critical manifold in
+  (p_cat, p_info), different slices produce different apparent
+  orderings — "Model A" along one axis could be "Model B" on the
+  manifold. True Model A requires staggered thresholds along ALL
+  control directions. Next: fine p_info grid at several p_cat values
+  to map the manifold, and seed the exclusive/nucleation regimes.
+
+## Open threads going into M5
+
+1. 2-D sweep (p_cat x p_info) to test the critical-manifold hypothesis —
+   do the staggered lc's collapse onto one curve in 2-parameter space?
+2. S is structurally "easy" (any self-rep suffices) — consider a
+   collective-S variant (shock survival of the FULL organized state,
+   not just one motif) to avoid it always preceding phi.
+3. Polymer food_len=2 regime: which species actually carry the flux?
+   Check whether organized states are dominated by short self-reps
+   (trivial) vs extended autocatalytic sets (interesting).
+4. Gillespie/SSA on polymer nets for stochastic nucleation + extinction
+   (P(nucleation) as an order parameter for the exclusive regime).

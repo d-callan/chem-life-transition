@@ -40,7 +40,9 @@ def simulate(
     resource saturation, so supercritical networks can diverge; dilution
     cannot catch quadratic growth. We stop rather than grind the solver.
     """
-    S = net.stoichiometry()
+    from scipy import sparse
+
+    S = sparse.csr_matrix(net.stoichiometry())
     n = net.n_species
 
     feed = np.zeros(n)

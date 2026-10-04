@@ -58,6 +58,9 @@ class ReactionNetwork:
     # optional structural info per species (e.g. polymer string) used by
     # observables.assembly to compute a real assembly index
     structure: dict[int, str] = field(default_factory=dict)
+    # cached vectorized propensity arrays (False = use slow loop)
+    _prop_cache: object = field(
+        default=None, init=False, repr=False, compare=False)
 
     @property
     def n_species(self) -> int:
@@ -112,6 +115,19 @@ class ReactionNetwork:
         saturating in both substrates and catalyst (k_sat finite).
         """
         x = np.maximum(x, 0.0)
+        fa = self._fast_arrays()
+        if fa is not None:
+            R, rate, cat_rate, C, k_sat = fa
+            if k_sat is None:
+                xp = np.append(x, 1.0)
+                mass = xp[R[:, 0]] * xp[R[:, 1]]
+                cat = C @ x
+            else:
+                xs = x / (k_sat + x)
+                xsp = np.append(xs, 1.0)
+                mass = xsp[R[:, 0]] * xsp[R[:, 1]]
+                cat = C @ xs
+            return np.maximum(rate * mass + cat_rate * mass * cat, 0.0)
         a = np.zeros(self.n_reactions)
         for r, rxn in enumerate(self.reactions):
             if rxn.k_sat is None:
@@ -128,3 +144,35 @@ class ReactionNetwork:
                 cat = sum(x[c] / (rxn.k_sat + x[c]) for c in rxn.catalysts)
             a[r] = rxn.rate * mass + rxn.cat_rate * mass * cat
         return np.maximum(a, 0.0)
+
+    def _fast_arrays(self):
+        """Vectorized propensity arrays, or None if any reaction needs
+        the general path (>2 reactants, non-unit stoich, mixed k_sat).
+        Cached on the instance; networks are treated as immutable."""
+        if self._prop_cache is not None:
+            return self._prop_cache or None
+        k_sats = {r.k_sat for r in self.reactions}
+        ok = len(k_sats) == 1 and all(
+            len(r.reactants) <= 2
+            and all(nu == 1 for nu in r.reactants.values())
+            for r in self.reactions
+        )
+        if not ok:
+            self._prop_cache = False
+            return None
+        from scipy import sparse
+
+        n = self.n_species
+        R = np.full((self.n_reactions, 2), n)  # sentinel -> appended 1.0
+        C = sparse.dok_matrix((self.n_reactions, n))
+        rate = np.empty(self.n_reactions)
+        cat_rate = np.empty(self.n_reactions)
+        for r, rxn in enumerate(self.reactions):
+            for k, s in enumerate(rxn.reactants):
+                R[r, k] = s
+            for c in rxn.catalysts:
+                C[r, c] += 1.0
+            rate[r] = rxn.rate
+            cat_rate[r] = rxn.cat_rate
+        self._prop_cache = (R, rate, cat_rate, C.tocsr(), k_sats.pop())
+        return self._prop_cache

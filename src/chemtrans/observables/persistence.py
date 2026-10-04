@@ -105,7 +105,7 @@ def evolvability_proxy(
     for _ in range(n_mut):
         reactions = [
             Reaction(dict(r.reactants), dict(r.products), list(r.catalysts),
-                     r.rate, r.cat_rate)
+                     r.rate, r.cat_rate, r.k_sat)
             for r in net.reactions
         ]
         r = int(rng.choice(cat_rxns))

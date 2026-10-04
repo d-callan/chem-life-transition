@@ -45,9 +45,41 @@ def path_assembly_index(net: ReactionNetwork) -> np.ndarray:
     return A
 
 
+def _string_assembly(s: str, memo: dict) -> int:
+    """Assembly index of a string (Marshall/Cronin-style).
+
+    a(s) = min over bipartitions s=u+v of
+        a(u) + 1            if u == v   (build once, join to itself)
+        a(u) + a(v) + 1     otherwise
+    with a(single letter) = 0. Previously built strings stay available,
+    so repeats are cheap — that's the whole point of the measure.
+    """
+    if len(s) <= 1:
+        return 0
+    if s in memo:
+        return memo[s]
+    best = len(s) - 1  # monomer-by-monomer upper bound
+    for cut in range(1, len(s)):
+        u, v = s[:cut], s[cut:]
+        cost = _string_assembly(u, memo) + 1 if u == v else \
+            _string_assembly(u, memo) + _string_assembly(v, memo) + 1
+        best = min(best, cost)
+    memo[s] = best
+    return best
+
+
 def molecular_assembly_index(net: ReactionNetwork) -> np.ndarray:
     """True assembly index from species structure (requires structure field)."""
-    raise NotImplementedError("needs structured species (polymer_ligation)")
+    if not net.structure:
+        raise ValueError("no species structure — use path_assembly_index "
+                         "or a structured generator (polymer_ligation)")
+    memo: dict = {}
+    A = np.full(net.n_species, np.inf)
+    for i in range(net.n_species):
+        s = net.structure.get(i)
+        if s is not None:
+            A[i] = _string_assembly(s, memo)
+    return A
 
 
 def assembly_distribution(

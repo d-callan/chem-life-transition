@@ -55,8 +55,15 @@ def measure_run(
 
     x_ss = X[~np.isnan(X).any(axis=1)][-1]
     flux = net.propensity(x_ss)
-    A_idx = path_assembly_index(net)
-    edges, hist = assembly_distribution(net, x_ss)
+    if net.structure:
+        from .observables.assembly import molecular_assembly_index
+        from .observables.heredity import heredity_index
+        A_idx = molecular_assembly_index(net)
+        row["H"] = heredity_index(net, x_ss)
+    else:
+        A_idx = path_assembly_index(net)
+    edges, hist = assembly_distribution(
+        net, x_ss, true_index=bool(net.structure))
     finite = A_idx[np.isfinite(A_idx)]
 
     row.update({

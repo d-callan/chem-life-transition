@@ -50,7 +50,7 @@ notebooks/     plots / exploration
 | `S(λ)` | self-maintenance: deepest dilution shock survived | `persistence.py` |
 | `R₀(λ)` | spectral radius of next-generation matrix (offspring per catalyst-lifetime) | `persistence.py` |
 | `E(λ)` | evolvability: fraction of catalyst-edge mutations altering the RAF core | `persistence.py` |
-| `H(λ)` | heritable information retention — NOT measurable in `random_crn`, needs `polymer_ligation` | — |
+| `H(λ)` | heritable information: template-matching fraction of catalyzed flux (polymer only — `random_crn` has no information carrier) | `heredity.py` |
 | `C(λ)` | assembly-complexity distribution P(A); watch the **high-assembly tail** | `assembly.py` |
 | `ρ(K)` | spectral radius of catalysis matrix — static threshold predictor | `spectral.py` |
 
@@ -65,6 +65,16 @@ true nucleation barriers → dynamical bistability), `k_sat`
 (Michaelis–Menten saturation; None = unbounded mass-action → runaway
 growth), and the generator itself (`random_crn` vs `raf_biased` vs
 `polymer_ligation`) — comparing across generators is the universality test.
+
+`polymer_ligation`-specific knobs: `alphabet_size`, `max_length`,
+`n_ligations`, `p_info` (fraction of catalysts that are
+template-matched — the information channel, decoupled from `p_cat`),
+`p_selfrep` (fraction of informational catalysts that are exact
+self-templates `cat == product`), `food_len` (strings with
+`len ≤ food_len` are food), `cleavage_rate`, `ligation_rate`.
+Chemistry: every split `a+b → ab` of every pool string is a ligation
+route (reverse = cleavage); catalysis is assigned per product since
+template matching is a property of what is assembled.
 
 ## Caveats we bake in
 
@@ -82,7 +92,7 @@ growth), and the generator itself (`random_crn` vs `raf_biased` vs
 1. **Milestone 1** ✅ — `random_crn` + `ode.simulate` + `closure`/`spectral`/`assembly`; `Φ(λ)` shows a sharp, bimodal transition region at `p_cat ≈ 0.2–0.3` in the dense regime.
 2. **Milestone 2** ✅ — `hysteresis.py` + `finite_size.py`. Finding: NO bistability in default regime — the transition is structural percolation across the ensemble, not dynamical; consistent with fixed-degree percolation (λc stable across N).
 3. **Milestone 3** ✅ — `exclusive_catalysis` (true nucleation barriers → genuine bistability), `k_sat` MM saturation (bounded kinetics → real steady states), S/R₀/E observables, `critical_points.py` alignment analysis, `transition_discrimination.py` runs end-to-end (first verdict: Model B, weakly supported — observables not yet decoupled).
-4. **Milestone 4** — `polymer_ligation` generator; real assembly index; H(λ) becomes measurable; cross-generator comparison (universality test).
+4. **Milestone 4** ✅ — `polymer_ligation` (string species, all-splits ligation/cleavage chemistry, template catalysis); `molecular_assembly_index` + `H(λ)` measurable; `p_info` decouples information channel from catalytic connectivity. Finding: organization turns on along `p_info` not `p_cat`; sweeping `p_info` gives staggered λc (S,H ≈ 0.2 → Φ,A,R₀ ≈ 0.5 → E,assembly ≈ 0.7–1.0, Model-A-like) while `p_cat` sweeps show coupled behavior — verdict is **axis-dependent**, motivating 2-D critical-manifold mapping (see `runs/NOTEBOOK.md`).
 5. **Milestone 5** — `gillespie.py`; noise, extinction, nucleation times, and the fate of the organized state near λc at finite copy number.
 
 ## Setup
