@@ -98,10 +98,17 @@ def autocatalytic_activity(net: ReactionNetwork, x: np.ndarray) -> float:
     total_flux = 0.0
     x = np.maximum(np.asarray(x, dtype=float), 0.0)
     for rxn in net.reactions:
-        mass = 1.0
-        for i, nu in rxn.reactants.items():
-            mass *= x[i] ** nu
-        cat = rxn.cat_rate * mass * sum(x[c] for c in rxn.catalysts)
+        if rxn.k_sat is None:
+            mass = 1.0
+            for i, nu in rxn.reactants.items():
+                mass *= x[i] ** nu
+            cat = rxn.cat_rate * mass * sum(x[c] for c in rxn.catalysts)
+        else:
+            mass = 1.0
+            for i, nu in rxn.reactants.items():
+                mass *= (x[i] / (rxn.k_sat + x[i])) ** nu
+            cat = (rxn.cat_rate * mass
+                   * sum(x[c] / (rxn.k_sat + x[c]) for c in rxn.catalysts))
         cat_flux += cat
         total_flux += rxn.rate * mass + cat
     return float(cat_flux / total_flux) if total_flux > 0.0 else 0.0

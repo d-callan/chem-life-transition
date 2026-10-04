@@ -27,7 +27,13 @@ class Reaction:
     reactants / products: {species_index: stoichiometric coefficient}
     catalysts: species indices that accelerate this reaction (not consumed)
     rate: mass-action rate constant (uncatalyzed)
-    cat_rate: additional rate constant per unit catalyst concentration
+    cat_rate: catalytic rate constant (per unit catalyst, mass-action)
+    k_sat: None = pure mass-action catalysis (unbounded — a closed
+        autocatalytic core diverges under a chemostat). Finite value =
+        Michaelis-Menten saturation: the catalyzed rate becomes
+        cat_rate * prod_i[x_i/(k_sat+x_i)] * sum_c[x_c/(k_sat+x_c)],
+        bounded by ~cat_rate, giving the organized phase a real steady
+        state.
 
     Convention: rate == 0 with a nonempty catalysts list means the reaction
     REQUIRES a catalyst — it cannot fire spontaneously. The RAF/closure
@@ -39,6 +45,7 @@ class Reaction:
     catalysts: list[int] = field(default_factory=list)
     rate: float = 1.0
     cat_rate: float = 10.0
+    k_sat: float | None = None
 
 
 @dataclass
@@ -98,15 +105,26 @@ class ReactionNetwork:
         return g
 
     def propensity(self, x: np.ndarray) -> np.ndarray:
-        """Mass-action propensity of each reaction at concentration vector x.
+        """Propensity of each reaction at concentration vector x.
 
-        a_r = rate * prod(x_i^nu_i) + cat_rate * prod(x_i^nu_i) * sum(x_cat)
+        Uncatalyzed term: rate * prod(x_i^nu_i).
+        Catalyzed term: mass-action (k_sat None) or Michaelis-Menten
+        saturating in both substrates and catalyst (k_sat finite).
         """
+        x = np.maximum(x, 0.0)
         a = np.zeros(self.n_reactions)
         for r, rxn in enumerate(self.reactions):
-            mass = 1.0
-            for i, nu in rxn.reactants.items():
-                mass *= x[i] ** nu
-            cat_conc = sum(x[c] for c in rxn.catalysts)
-            a[r] = mass * (rxn.rate + rxn.cat_rate * cat_conc)
+            if rxn.k_sat is None:
+                mass = 1.0
+                for i, nu in rxn.reactants.items():
+                    mass *= x[i] ** nu
+                cat = sum(x[c] for c in rxn.catalysts)
+            else:
+                # Michaelis-Menten: substrate AND catalyst saturate —
+                # every rate is bounded, so steady states always exist
+                mass = 1.0
+                for i, nu in rxn.reactants.items():
+                    mass *= (x[i] / (rxn.k_sat + x[i])) ** nu
+                cat = sum(x[c] / (rxn.k_sat + x[c]) for c in rxn.catalysts)
+            a[r] = rxn.rate * mass + rxn.cat_rate * mass * cat
         return np.maximum(a, 0.0)

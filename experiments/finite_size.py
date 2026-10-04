@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--p-cat", type=float, nargs="+",
                     default=np.linspace(0.1, 0.4, 7).tolist())
     ap.add_argument("--p-cat-required", type=float, default=0.5)
+    ap.add_argument("--k-sat", type=float, default=None,
+                    help="Michaelis-Menten saturation conc; None = unbounded mass-action")
     ap.add_argument("--n-reps", type=int, default=10)
     ap.add_argument("--feed-rate", type=float, default=1.0)
     ap.add_argument("--dilution-rate", type=float, default=0.1)
@@ -63,7 +65,7 @@ def main():
                         n_species=n_species, n_reactions=n_reactions,
                         p_cat=p_cat, n_food=min(args.n_food, n_species // 4),
                         max_reactants=args.max_reactants,
-                        p_cat_required=args.p_cat_required, seed=seed,
+                        p_cat_required=args.p_cat_required, k_sat=args.k_sat, seed=seed,
                     )
                     row = {"n_species": n_species, "n_reactions": n_reactions,
                            "p_cat": p_cat, "seed": seed,

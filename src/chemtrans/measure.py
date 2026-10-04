@@ -26,6 +26,8 @@ def measure_run(
     dilution_rate: float,
     t_max: float = 150.0,
     x0: np.ndarray | None = None,
+    with_persistence: bool = False,
+    persistence_seed: int | None = None,
 ) -> dict:
     """Simulate net to steady state and return the order-parameter record.
 
@@ -74,4 +76,14 @@ def measure_run(
         },
         "x_ss": x_ss.tolist(),
     })
+
+    if with_persistence and not row["runaway"]:
+        from .observables.persistence import (
+            evolvability_proxy,
+            reproductive_number,
+            self_maintenance,
+        )
+        row["S"] = self_maintenance(net, x_ss, feed_rate, dilution_rate)
+        row["R0"] = reproductive_number(net, x_ss, dilution_rate)
+        row["E"] = evolvability_proxy(net, seed=persistence_seed)
     return row

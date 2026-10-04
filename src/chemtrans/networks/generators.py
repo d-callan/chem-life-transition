@@ -35,6 +35,8 @@ def random_crn(
     max_products: int = 2,
     p_cat_required: float = 0.5,
     cat_boost: float = 20.0,
+    exclusive_catalysis: bool = False,
+    k_sat: float | None = None,
     seed: int | None = None,
 ) -> ReactionNetwork:
     """Random CRN with tunable catalytic connectivity.
@@ -47,6 +49,13 @@ def random_crn(
     catalyst-accelerated. This knob interpolates between "catalysis is a
     speedup" (0) and "catalysis is a precondition for new chemistry" (1) —
     the latter is the physically interesting regime for RAF formation.
+
+    exclusive_catalysis: if True, species produced by catalyst-required
+    reactions are given NO spontaneous production route — spontaneous and
+    catalyst-accelerated reactions are resampled so their products avoid
+    those species entirely. This creates genuine nucleation barriers (the
+    RAF core cannot bootstrap from food alone) and makes dynamical
+    bistability possible; see runs/NOTEBOOK.md.
 
     Food species are indices 0..n_food-1 and are supplied by the chemostat.
     Rates are lognormal(sigma=0.5) around 1.0 so the network is
@@ -65,7 +74,11 @@ def random_crn(
         n_p = int(rng.integers(1, max_products + 1))
         reactants = rng.choice(n_species, size=n_r, replace=False)
         products = rng.choice(n_species, size=n_p, replace=False)
-        if set(products.tolist()) <= set(reactants.tolist()):
+        # disallow reactant->product overlap: A->A+B is a spontaneous
+        # replicator creating matter ex nihilo and diverging under mass
+        # action. Amplification belongs exclusively in the catalysis
+        # channel (that's the thing being studied).
+        if set(products.tolist()) & set(reactants.tolist()):
             continue
         key = (tuple(sorted(reactants.tolist())), tuple(sorted(products.tolist())))
         if key in seen:
@@ -78,6 +91,7 @@ def random_crn(
             products={int(i): 1 for i in products},
             rate=base_rate,
             cat_rate=base_rate * cat_boost,
+            k_sat=k_sat,
         )
         if rng.random() < p_cat:
             cat = int(rng.integers(n_species))
@@ -86,6 +100,39 @@ def random_crn(
                 if rng.random() < p_cat_required:
                     rxn.rate = 0.0
         reactions.append(rxn)
+
+    if exclusive_catalysis:
+        excl: set[int] = set()
+        for rxn in reactions:
+            if rxn.rate == 0.0 and rxn.catalysts:
+                excl.update(rxn.products)
+        excl -= food
+        allowed = [i for i in range(n_species) if i not in excl]
+        excl_list = sorted(excl)
+        kept = []
+        for rxn in reactions:
+            if rxn.rate > 0.0 and set(rxn.products) & excl:
+                if not allowed:
+                    continue  # no spontaneous-eligible product exists; drop
+                n_p = len(rxn.products)
+                rxn.products = {
+                    int(i): 1
+                    for i in rng.choice(
+                        allowed, size=n_p, replace=len(allowed) < n_p
+                    )
+                }
+            kept.append(rxn)
+        reactions = kept
+        # Nucleation barrier also requires the CATALYSTS of required
+        # reactions to be exclusive species — otherwise a spontaneous
+        # route to a catalyst ignites the whole core anyway
+        # (see runs/NOTEBOOK.md, M2/M3 findings).
+        if excl_list:
+            for rxn in reactions:
+                if rxn.rate == 0.0 and rxn.catalysts:
+                    rxn.catalysts = [
+                        int(rng.choice(excl_list)) for _ in rxn.catalysts
+                    ]
 
     return ReactionNetwork(species=species, reactions=reactions, food=food)
 

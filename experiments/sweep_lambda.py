@@ -36,7 +36,7 @@ def run_one(p_cat, feed_rate, dilution_rate, args, seed):
         p_cat=p_cat,
         n_food=args.n_food,
         max_reactants=args.max_reactants,
-        p_cat_required=args.p_cat_required,
+        p_cat_required=args.p_cat_required, k_sat=args.k_sat,
         seed=seed,
     )
     row = {
@@ -47,6 +47,7 @@ def run_one(p_cat, feed_rate, dilution_rate, args, seed):
             "n_food": args.n_food,
             "max_reactants": args.max_reactants,
             "p_cat_required": args.p_cat_required,
+            "k_sat": args.k_sat,
         },
         "seed": seed,
         "lambda": {"p_cat": p_cat, "feed_rate": feed_rate,
@@ -68,6 +69,8 @@ def main():
     ap.add_argument("--p-cat", type=float, nargs="+",
                     default=np.linspace(0.0, 0.5, 11).tolist())
     ap.add_argument("--p-cat-required", type=float, default=0.5)
+    ap.add_argument("--k-sat", type=float, default=None,
+                    help="Michaelis-Menten saturation conc; None = unbounded mass-action")
     ap.add_argument("--feed-rate", type=float, default=1.0)
     ap.add_argument("--dilution-rate", type=float, default=0.1)
     ap.add_argument("--t-max", type=float, default=300.0)

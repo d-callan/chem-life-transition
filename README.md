@@ -35,6 +35,7 @@ experiments/   sweep_lambda.py          phase diagram base dataset
                hysteresis.py            first-order signature (up/down ramps)
                finite_size.py           does lambda_c sharpen with N?
                transition_discrimination.py   Model A vs B vs C — headline test
+runs/          NOTEBOOK.md — lab notebook: every run, command, result, reading
 docs/          conversation.md — origin conversation (the spec)
 data/          run outputs (jsonl, gitignored)
 notebooks/     plots / exploration
@@ -46,9 +47,10 @@ notebooks/     plots / exploration
 |---|---|---|
 | `Φ` | organizational closure: flux fraction inside self-maintaining (RAF) core | `closure.py` |
 | `A(λ)` | autocatalytic activity: catalyzed fraction of production flux | `closure.py` |
-| `S(λ)` | self-maintenance: persistence through dilution shocks | `persistence.py` |
-| `H(λ)` | heritable information retention | `persistence.py` |
-| `E(λ)` | evolvability / reproductive number R₀ of the organized state | `persistence.py` |
+| `S(λ)` | self-maintenance: deepest dilution shock survived | `persistence.py` |
+| `R₀(λ)` | spectral radius of next-generation matrix (offspring per catalyst-lifetime) | `persistence.py` |
+| `E(λ)` | evolvability: fraction of catalyst-edge mutations altering the RAF core | `persistence.py` |
+| `H(λ)` | heritable information retention — NOT measurable in `random_crn`, needs `polymer_ligation` | — |
 | `C(λ)` | assembly-complexity distribution P(A); watch the **high-assembly tail** | `assembly.py` |
 | `ρ(K)` | spectral radius of catalysis matrix — static threshold predictor | `spectral.py` |
 
@@ -56,9 +58,13 @@ notebooks/     plots / exploration
 
 `n_species`, `n_reactions` (finite-size scaling), `p_cat` (catalytic
 connectivity → pushes `ρ(K)` through 1), `feed_rate` (energy/matter flux),
-`dilution_rate` (mortality pressure), `n_food`, and the generator itself
-(`random_crn` vs `raf_biased` vs `polymer_ligation`) — comparing across
-generators is the universality test.
+`dilution_rate` (mortality pressure), `n_food`, `max_reactants`,
+`p_cat_required` (catalysis as precondition vs speedup),
+`exclusive_catalysis` (catalysts get NO spontaneous production route →
+true nucleation barriers → dynamical bistability), `k_sat`
+(Michaelis–Menten saturation; None = unbounded mass-action → runaway
+growth), and the generator itself (`random_crn` vs `raf_biased` vs
+`polymer_ligation`) — comparing across generators is the universality test.
 
 ## Caveats we bake in
 
@@ -73,11 +79,11 @@ generators is the universality test.
 
 ## Roadmap
 
-1. **Milestone 1** — implement `random_crn` + `ode.simulate` + `closure`/`spectral`/`assembly` basics; run `sweep_lambda.py`; get first `Φ(λ)` diagram.
-2. **Milestone 2** — `hysteresis.py` + `finite_size.py`; decide if the knee in `Φ(λ)` is a transition or a crossover.
-3. **Milestone 3** — remaining order parameters (S, H, E) + `transition_discrimination.py`; the A/B/C test.
-4. **Milestone 4** — `polymer_ligation` generator; real assembly index; cross-generator comparison (universality).
-5. **Milestone 5** — `gillespie.py`; noise, extinction, and the fate of the organized state near λc.
+1. **Milestone 1** ✅ — `random_crn` + `ode.simulate` + `closure`/`spectral`/`assembly`; `Φ(λ)` shows a sharp, bimodal transition region at `p_cat ≈ 0.2–0.3` in the dense regime.
+2. **Milestone 2** ✅ — `hysteresis.py` + `finite_size.py`. Finding: NO bistability in default regime — the transition is structural percolation across the ensemble, not dynamical; consistent with fixed-degree percolation (λc stable across N).
+3. **Milestone 3** ✅ — `exclusive_catalysis` (true nucleation barriers → genuine bistability), `k_sat` MM saturation (bounded kinetics → real steady states), S/R₀/E observables, `critical_points.py` alignment analysis, `transition_discrimination.py` runs end-to-end (first verdict: Model B, weakly supported — observables not yet decoupled).
+4. **Milestone 4** — `polymer_ligation` generator; real assembly index; H(λ) becomes measurable; cross-generator comparison (universality test).
+5. **Milestone 5** — `gillespie.py`; noise, extinction, nucleation times, and the fate of the organized state near λc at finite copy number.
 
 ## Setup
 

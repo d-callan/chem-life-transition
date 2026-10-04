@@ -59,7 +59,8 @@ def run_one(p_cat, args, seed):
     net = random_crn(
         n_species=args.n_species, n_reactions=args.n_reactions, p_cat=p_cat,
         n_food=args.n_food, max_reactants=args.max_reactants,
-        p_cat_required=args.p_cat_required, seed=seed,
+        p_cat_required=args.p_cat_required, k_sat=args.k_sat,
+        exclusive_catalysis=args.exclusive_catalysis, seed=seed,
     )
     row = {"p_cat": p_cat, "seed": seed,
            "generator_params": vars(args)}
@@ -119,6 +120,9 @@ def main():
     ap.add_argument("--p-cat", type=float, nargs="+",
                     default=[0.15, 0.2, 0.25, 0.3])
     ap.add_argument("--p-cat-required", type=float, default=0.5)
+    ap.add_argument("--k-sat", type=float, default=None,
+                    help="Michaelis-Menten saturation conc; None = unbounded mass-action")
+    ap.add_argument("--exclusive-catalysis", action="store_true")
     ap.add_argument("--n-reps", type=int, default=10)
     ap.add_argument("--feed-rate", type=float, default=1.0)
     ap.add_argument("--dilution-rate", type=float, default=0.1)
