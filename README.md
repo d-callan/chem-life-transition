@@ -93,7 +93,69 @@ template matching is a property of what is assembled.
 2. **Milestone 2** ✅ — `hysteresis.py` + `finite_size.py`. Finding: NO bistability in default regime — the transition is structural percolation across the ensemble, not dynamical; consistent with fixed-degree percolation (λc stable across N).
 3. **Milestone 3** ✅ — `exclusive_catalysis` (true nucleation barriers → genuine bistability), `k_sat` MM saturation (bounded kinetics → real steady states), S/R₀/E observables, `critical_points.py` alignment analysis, `transition_discrimination.py` runs end-to-end (first verdict: Model B, weakly supported — observables not yet decoupled).
 4. **Milestone 4** ✅ — `polymer_ligation` (string species, all-splits ligation/cleavage chemistry, template catalysis); `molecular_assembly_index` + `H(λ)` measurable; `p_info` decouples information channel from catalytic connectivity. Finding: organization turns on along `p_info` not `p_cat`; sweeping `p_info` gives staggered λc (S,H ≈ 0.2 → Φ,A,R₀ ≈ 0.5 → E,assembly ≈ 0.7–1.0, Model-A-like) while `p_cat` sweeps show coupled behavior — verdict is **axis-dependent**, motivating 2-D critical-manifold mapping (see `runs/NOTEBOOK.md`).
-5. **Milestone 5** — `gillespie.py`; noise, extinction, nucleation times, and the fate of the organized state near λc at finite copy number.
+5. **Milestone 5** ✅ — `manifold_2d.py` (the A/B/C question done right: activation boundaries in the 2-D `(p_cat, p_info)` plane, not 1-D slices) + `gillespie.py` (direct SSA, validated). Finding: observables sit on **different activation surfaces** — cascade/nested, not one transition; organized chemistry with zero heredity exists at `(p_cat=0.8, p_info=0)`.
+
+## Question 0 — before A vs B vs C: is there a bifurcation at all?
+
+The A/B/C question only makes sense if the chemistry→organization shift
+is a *phase transition / bifurcation* in the dynamical-systems sense —
+not just a smooth crossover. The evidence required:
+
+- **Spectral gap closing**: the dominant Jacobian eigenvalue at the
+  organized steady state approaches 0 as λ→λc (critical slowing down).
+  A crossover has no such signature.
+- **Within-network bistability**: a FIXED network shows two attractors
+  (seeded organized / unseeded dead) — a saddle-node-like structure.
+  NB: this differs from *ensemble percolation* (fraction of random
+  networks containing a motif), which is a structural transition of the
+  ensemble, not a bifurcation of any one system's dynamics.
+- **Susceptibility peak**: ensemble Var(Φ) peaks near the boundary and
+  sharpens with system size; a crossover stays flat/smooth.
+- **Hysteresis**: adiabatic continuation in a dynamical knob
+  (feed_rate, dilution) traces different up/down branches.
+
+`experiments/criticality.py` measures these along a control slice.
+Current status (see `runs/NOTEBOOK.md`):
+
+- **Organized states are genuine stable attractors** — resident-Jacobian
+  α < 0, no dead-species invasion (the naive full-space Jacobian is
+  misleading at extinct species; use the support-restricted one).
+- **No dynamical bifurcation signature along `p_info`** (polymer):
+  α stays clearly negative, `Var(Φ)` smooth, `frac_bistable = 0` — even
+  at `p_cat_required=1`. Reason found: **the cleavage backdoor** —
+  all-splits hydrolysis produces any string spontaneously as a fragment
+  of a longer one, washing out nucleation barriers in polymer chemistry.
+- **Within-network bistability confirmed** only for `exclusive_catalysis`
+  `random_crn` (M3): the model family *can* bifurcate, just not along
+  the polymer structural axes probed so far.
+- **Two-level picture** (worth keeping): (a) bifurcation of a FIXED
+  network's dynamics — hysteresis/gap-closing required, seen only in
+  exclusive regime; (b) a landscape/percolation transition in the space
+  of networks — which attractor *types* become reachable — seen
+  everywhere. Claims must name which level they mean.
+
+## Where we are — findings so far (for future selves)
+
+1. **Both transition types exist in the same model**, one knob apart: ensemble percolation of RAF motifs (default `random_crn`) vs dynamical first-order-like bistability (`exclusive_catalysis` — a real nucleation barrier).
+2. **Watch out for runaway artifacts**: unbounded mass-action made every early "organized" measurement a mid-explosion snapshot. `k_sat` (MM saturation on the whole propensity) is required for meaningful steady states. Also: `A→A+B` self-replicators were a generator bug, now banned.
+3. **Polymer chemistry organizes along the information axis** (`p_info`), not catalytic connectivity (`p_cat`) alone — random catalysis at `p_info=0` never organized except at very high `p_cat`.
+4. **The 2-D manifold picture (headline)**: in `(p_cat, p_info)` space the order parameters have *different* activation surfaces —
+   - `S`, `R₀`, `n_core`: on almost everywhere (any self-rep motif suffices)
+   - `H`: pure `p_info ≈ 0.25` threshold, independent of `p_cat`
+   - `Φ`: curved boundary — `p_cat` and `p_info` *substitute* for each other
+   - `A`, `E`: only when *both* are high
+   - **`(p_cat=0.8, p_info=0)`: Φ≈0.5, RAF cores, but H=0 — organized autocatalytic chemistry with zero heredity.**
+   → Evidence favors cascade/nested (Models A/C) over single-transition (B) *in this regime*; caveat: these are smooth activation boundaries, not proven singularities.
+5. **Verdicts are slice-dependent**: any single 1-D sweep can look Model-A or Model-B depending on which parameter it rides. A-vs-B discrimination needs the multi-parameter picture.
+
+## Open threads / next steps
+
+1. **Cleavage-closed exclusive sets**: polymer bistability needs catalysts whose entire cleavage ancestry is also catalyst-required — a generator knob blocking the cleavage backdoor.
+2. **What carries the organized flux?** Are "organized" states dominated by trivial short self-reps (`AA → AA`) or extended collectively-autocatalytic sets? Needs a flux-decomposition diagnostic on polymer nets.
+3. **`random_crn` 2-D analog**: `p_cat × p_cat_required` or `p_cat × feed_rate` — does the simple generator also show substitutable axes, or is this polymer-specific?
+4. **Tau-leaping SSA** for polymer-scale nets (direct SSA is O(n_rxn)/event — fine at 200 rxns, impractical at 6000); `P(nucleation)` as an order parameter.
+5. **Collective-S variant**: `S` currently turns on if *any* motif survives a shock — a version requiring the whole organized state to recover would compare more fairly with `Φ`.
+6. **Sharper transition criteria**: current boundaries are logistic fits to observable thresholds; finite-size scaling of the 2-D boundary width would test whether these are true critical surfaces vs smooth crossovers.
 
 ## Setup
 

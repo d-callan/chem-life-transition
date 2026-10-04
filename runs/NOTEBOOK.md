@@ -392,3 +392,66 @@ upper-right corner (need BOTH high). tail_mass always on (degenerate).
 3. Tau-leaping for SSA on polymer-scale nets; P(nucleation) observable.
 4. random_crn 2-D analog: p_cat x p_cat_required or p_cat x feed_rate —
    does its manifold also show substitutable axes?
+
+## 2026-10-04 — QUESTION 0: is it a bifurcation or a crossover?
+
+User pointed out the A/B/C question presupposes a genuine bifurcation.
+Built experiments/criticality.py measuring, per network along a lambda
+slice: phi + var(phi) + Sarle BC, jacobian_spectral_abscissa alpha at
+the steady state, invasion_pressure, and within-network seeded-vs-
+unseeded bistability.
+
+**Diagnostic bug found+fixed:** naive full-space Jacobian reported
+alpha > 0 at organized steady states — artifact of finite-differencing
+at EXTINCT species under the max(x,0) clamp (one-sided derivatives at
+x=0 create spurious unstable directions). Verified: phi sits rock-
+steady 400+ time units; resident-restricted Jacobian gives alpha < 0
+and zero dead-species invasion pressure. jacobian_spectral_abscissa now
+restricts to the support (alive species); invasion_pressure added.
+
+**Cmd A:** `python experiments/criticality.py --generator polymer_ligation --lambda-param p_info --p-cat-fixed 0.6 --lam-grid 0.0 0.1 0.2 0.3 0.5 0.7 1.0 --n-reps 5 --n-bistability 3 --out data/criticality_polymer2.jsonl`
+
+**Result A (p_info sweep, corrected alpha):**
+  lam   <phi>  var    <alpha>  frac_bist
+  0.00  0.010  0.000  -0.62    0
+  0.10  0.042  0.001  -0.33    0
+  0.20  0.100  0.005  -0.27    0
+  0.30  0.115  0.003  -0.17    0
+  0.50  0.140  0.002  -0.14    0
+  0.70  0.224  0.004  -0.17    0
+  1.00  0.275  0.006  -0.11    0
+
+- Organized states are GENUINE stable attractors (alpha<0, invasion-
+  proof) — real dynamical regimes, not transients. Good.
+- BUT alpha never approaches 0, var(phi) rises smoothly (no
+  susceptibility peak), zero within-network bistability ->
+  NO dynamical-bifurcation signature along p_info. The transition is
+  ensemble-level/structural: which attractors exist and are reachable,
+  not a bifurcation of a fixed system's dynamics.
+
+**Cmd B:** `python experiments/criticality.py --generator polymer_ligation --lambda-param p_info --p-cat-fixed 0.6 --p-cat-required 1.0 --lam-grid 0.1 0.3 0.5 0.7 --n-reps 4 --n-bistability 4 --out data/criticality_polymer_excl.jsonl`
+
+**Result B (exclusive regime):** STILL frac_bistable=0. Reason found:
+the CLEAVAGE BACKDOOR — a catalyst-required product P can be produced
+spontaneously as a cleavage fragment of any longer string that forms
+without catalysis. All-splits hydrolysis diffuses the system through
+sequence space, washing out nucleation barriers. To get bistability in
+polymer chemistry we'd need exclusive sets closed under cleavage
+(catalysts whose superstrings are also unreachable) — a new knob.
+
+**Question-0 answer so far:**
+- Within-system dynamical bifurcation: PROVEN possible in this model
+  family (exclusive_catalysis random_crn, M3: seeded/unseeded split,
+  feed-ramp hysteresis). NOT found along polymer structural axes —
+  cleavage backdoor prevents barriers.
+- Ensemble/structural transition: YES everywhere — the fraction of
+  networks reaching organized attractors switches sharply with
+  (p_cat, p_info). This is a percolation-like transition in the SPACE
+  OF SYSTEMS (which attractors exist), not in one system's dynamics.
+- Conceptual clarification worth keeping: 'phase transition' math
+  applies at two levels. (a) Bifurcation theory applies to a FIXED
+  network's dynamics — needs hysteresis/gap-closing; only exclusive
+  random_crn shows it. (b) The chemistry->life 'transition' as we
+  measure it is level-(b): a landscape/percolation transition where
+  new attractor TYPES become reachable. Both are legitimate physics
+  but they are different objects, and claims should name which.
