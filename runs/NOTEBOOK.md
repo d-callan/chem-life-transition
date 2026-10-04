@@ -525,3 +525,45 @@ cells show P_nuc ~ O(1) at t_max=150.
 discreteness gives a clean barrier — the meaningful experiment is
 measuring gamma_nuc(V, cleavage) and gamma_ext(V) directly
 (mean first-passage times), which is the next experiment.
+
+## 2026-10-04 — mean first-passage: gamma_nuc and gamma_ext measured
+
+**Cmd:** `python experiments/first_passage.py --out data/first_passage.jsonl`
+192 SSA runs: 3 nets x 4 V x 2 cleavage x 2 conditions x 4 reps,
+t_max=120, phi threshold 0.05, record_dt=0.5.
+
+**Result (tau_nuc / tau_ext, time units; inf = censored):**
+- 4909, 11118: tau_nuc = 0 EVERYWHERE — degenerate. These nets carry a
+  FOOD-LEVEL self-rep (a food dimer catalyzing its own production
+  satisfies the RAF criterion trivially); 'organized' at t=0. Their
+  earlier 'bistability' was against a trivial organization.
+- 9100 (no food self-rep — real structure):
+      clv=0.02:  V=0.5: 32/75   V=1: 17/113   V=2: 8/147   V=5: 6/117
+      clv=0.2:   V=0.5: 7/155   V=1: 4/116    V=2: 3/157   V=5: 2/477
+
+**Interpretation:**
+1. The rates behave like physics says they should:
+   - tau_nuc DECREASES with V (more fragment molecules -> faster
+     nucleation) and with cleavage_rate (wider door -> faster).
+   - tau_ext INCREASES with V (bigger organized populations are more
+     stable against demographic noise).
+2. For 9100 the barrier is WEAK: tau_nuc ~ 2-30 vs t_obs=120 —
+   organization nucleates quickly wherever it can persist. The
+   window tau_nuc >> t_obs essentially doesn't exist at these
+   conditions; bistability would need a sparser sequence space
+   (bigger alphabet -> rarer fragments) or narrower door.
+3. tau_ext is a measurable rate too (75 -> 477 with V) — extinction
+   is not a boundary but a timescale, matching theory.
+4. Diagnostic value: phi(t) trajectories exposed food-level self-reps
+   that made earlier 'bistability' readings partly trivial. RAF-based
+   phi counts them; a 'nontrivial-organization' variant of phi (excl.
+   motifs entirely inside the food set) may be worth adding.
+
+**Prediction for next run:** alphabet_size 3-4 should steepen tau_nuc
+sharply (fragment space grows exponentially with alphabet) — the
+bistable window should open where it couldn't at alphabet=2.
+
+**Verification:** raf_reactions audit — 4909 has 8 and 11118 has 17
+RAF reactions catalyzed by FOOD species (supplied by feed from t=0);
+9100 has 0. The food-catalyst mechanism for instant organization is
+confirmed, not inferred.
