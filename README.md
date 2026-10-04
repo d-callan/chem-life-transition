@@ -152,8 +152,9 @@ Current status (see `runs/NOTEBOOK.md`):
 
 ## Open threads / next steps
 
-1. **Mean-first-passage measurement**: the barrier is a *rate*, not a wall — measure `γ_nucleation(V, cleavage)` and `γ_extinction(V)` directly (Poisson waiting times), which defines the bistable window as `1/γ ≫ t_obs` on both sides. Single-run seeded/unseeded tests overstate hard barriers.
-2. **What carries the organized flux?** Are "organized" states dominated by trivial short self-reps (`AA → AA`) or extended collectively-autocatalytic sets? Needs a flux-decomposition diagnostic on polymer nets.
+1. **Alphabet-density scan**: measure `τ_nuc`/`τ_ext` at alphabet 2→3→4 (and/or `max_length`) on a fixed seed grid — maps where the bistable window opens as a *phase boundary* in sequence-space density, the key knob behind the first-order structure. (Partially done: alphabet 3 shows the window at 2/3 seeds.)
+2. **Non-tautological heredity observable**: `H ≈ p_info` reads its own control dial (template-matched flux fraction vs. template-matched catalyst fraction). A real heredity measure should track something dynamical — e.g., sequence-covariance or motif survival across a dilution shock/perturbation — that can vary *within* a fixed `p_info`.
+3. **What carries the organized flux?** Are "organized" states dominated by trivial short self-reps (`AA → AA`) or extended collectively-autocatalytic sets? Needs a flux-decomposition diagnostic on polymer nets.
 3. **`random_crn` 2-D analog**: `p_cat × p_cat_required` or `p_cat × feed_rate` — does the simple generator also show substitutable axes, or is this polymer-specific?
 4. **Tau-leaping SSA** for polymer-scale nets (direct SSA is O(n_rxn)/event — fine at 200 rxns, impractical at 6000); `P(nucleation)` as an order parameter.
 5. **Collective-S variant**: `S` currently turns on if *any* motif survives a shock — a version requiring the whole organized state to recover would compare more fairly with `Φ`.
