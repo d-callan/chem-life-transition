@@ -492,3 +492,36 @@ t_max=150.
 SSA — sweep (V, cleavage_rate) for exclusive polymer nets; the
 bistable window's boundaries ARE the answer to 'how much suppression
 of the fragment door does the barrier require'.
+
+## 2026-10-04 — P(nucleation) sweep: the barrier is a rate, not a wall
+
+**Cmd:** `python experiments/nucleation.py --seeds 11118 9100 4909 6500 --n-reps 4 --out data/nucleation.jsonl`
+240 SSA runs: 4 nets x 4 V x 3 cleavage_rate x (4 unseeded + 1 seeded),
+exclusive polymer regime (p_cat_required=1.0), t_max=150.
+
+**Result (P_nuc / phi_seeded per cell):**
+- 4909: P_nuc 0.75-1.0 almost everywhere including V=1 clv=0.02 —
+  the earlier 'clean bistable' single run was stochastic luck
+  (P~0.25 that particular draw). NOT a hard barrier.
+- 9100: seeded phi~0 at nearly every cell — below the EXTINCTION
+  boundary, not bistable. Only nucleates at widest door (clv=0.2, V>=2).
+- 11118, 6500: P_nuc ~0.75-1.0 everywhere — door open at all V.
+
+**Corrected interpretation:** discreteness does NOT make the barrier
+binary — it makes nucleation a POISSON PROCESS with rate
+gamma(V, cleavage_rate, net). 'Bistability' is only meaningful as a
+timescale statement: 1/gamma_nuc >> t_obs AND 1/gamma_ext >> t_obs.
+For these nets/gammas the window is narrow and net-dependent; most
+cells show P_nuc ~ O(1) at t_max=150.
+- The single-run M5 'bistable' was real for that draw but not the
+  cell's typical behavior — single-run probes overstate hard barriers.
+- Extinction and nucleation boundaries both vary with V; some nets
+  (9100) have NO window: organized state can't persist at small V
+  even while nucleation is still possible at large V.
+- cleavage_rate weakly modulates door width within this range; net
+  topology (which motifs exist) dominates over door width.
+
+**What this means for blocking:** neither a binary block NOR pure
+discreteness gives a clean barrier — the meaningful experiment is
+measuring gamma_nuc(V, cleavage) and gamma_ext(V) directly
+(mean first-passage times), which is the next experiment.

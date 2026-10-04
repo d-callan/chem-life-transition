@@ -150,7 +150,7 @@ Current status (see `runs/NOTEBOOK.md`):
 
 ## Open threads / next steps
 
-1. **Cleavage-closed exclusive sets**: polymer bistability needs catalysts whose entire cleavage ancestry is also catalyst-required — a generator knob blocking the cleavage backdoor.
+1. **Mean-first-passage measurement**: the barrier is a *rate*, not a wall — measure `γ_nucleation(V, cleavage)` and `γ_extinction(V)` directly (Poisson waiting times), which defines the bistable window as `1/γ ≫ t_obs` on both sides. Single-run seeded/unseeded tests overstate hard barriers.
 2. **What carries the organized flux?** Are "organized" states dominated by trivial short self-reps (`AA → AA`) or extended collectively-autocatalytic sets? Needs a flux-decomposition diagnostic on polymer nets.
 3. **`random_crn` 2-D analog**: `p_cat × p_cat_required` or `p_cat × feed_rate` — does the simple generator also show substitutable axes, or is this polymer-specific?
 4. **Tau-leaping SSA** for polymer-scale nets (direct SSA is O(n_rxn)/event — fine at 200 rxns, impractical at 6000); `P(nucleation)` as an order parameter.
