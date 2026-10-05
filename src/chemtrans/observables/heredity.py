@@ -51,6 +51,7 @@ def cluster_attractors(
     equilibria: list[np.ndarray],
     tol: float = 0.05,
     min_mass: float = 0.0,
+    mass_ratio_tol: float | None = None,
 ) -> dict:
     """Greedy clustering of certified equilibria by signature distance.
 
@@ -59,30 +60,46 @@ def cluster_attractors(
     produce normalized "ghost" signatures that mimic organized
     attractors. Returns {n_attractors, labels, centers, members,
     kept_idx}; labels are indexed into the *kept* equilibria.
+
+    `mass_ratio_tol`: when set, two equilibria join a cluster only if
+    BOTH compositional distance <= tol AND their nonfood masses are
+    within a `mass_ratio_tol` factor of the cluster center's mass.
+    Without it, composition-normalized signatures make amplitude
+    bistability (high/low branches of the same composition) invisible.
     """
+    w = np.where(net.is_food, 0.0, 1.0)
+    if net.comp is not None:
+        w = w * net.comp.sum(axis=0)
+    masses = [float(w @ np.maximum(x, 0.0)) for x in equilibria]
     if min_mass > 0:
-        w = np.where(net.is_food, 0.0, 1.0)
-        if net.comp is not None:
-            w = w * net.comp.sum(axis=0)
-        masses = [float(w @ np.maximum(x, 0.0)) for x in equilibria]
-        kept = [x for x, m in zip(equilibria, masses) if m >= min_mass]
+        kept_idx = [i for i, m in enumerate(masses) if m >= min_mass]
+        kept = [equilibria[i] for i in kept_idx]
+        masses = [masses[i] for i in kept_idx]
     else:
         kept = list(equilibria)
     sigs = [attractor_signature(net, x) for x in kept]
     labels = np.full(len(sigs), -1, dtype=int)
     centers: list[np.ndarray] = []
+    center_mass: list[float] = []
     for i, s in enumerate(sigs):
         for c, ctr in enumerate(centers):
-            if compositional_distance(s, ctr) <= tol:
+            ok = compositional_distance(s, ctr) <= tol
+            if ok and mass_ratio_tol is not None:
+                ok = (abs(np.log(max(masses[i], 1e-300)
+                                  / max(center_mass[c], 1e-300)))
+                      <= np.log(mass_ratio_tol))
+            if ok:
                 labels[i] = c
                 break
         else:
             labels[i] = len(centers)
             centers.append(s.copy())
+            center_mass.append(masses[i])
     return {
         "n_attractors": len(centers),
         "labels": labels,
         "centers": centers,
+        "center_masses": center_mass,
         "members": {c: int((labels == c).sum()) for c in range(len(centers))},
         "n_input": len(equilibria),
         "n_kept": len(kept),

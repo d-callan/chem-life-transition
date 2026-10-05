@@ -15,8 +15,11 @@ context is absent or failed; it is NEVER silently set to zero.
              value = n_organized_attractors - 1 (min_mass-floored)
   O_select   mixture-competition fixation bias  kind="probability"
              value = |P(A wins) - 0.5| per mixture protocol
+             CONDITIONAL: only meaningful inside the multistable
+             regime (O_hered > 0); never fit as a global curve
   O_assembly joint high-MA + high-abundance     kind="continuous"
-             value = mass_signature
+             value = mass_signature_abs (absolute monomer-mass
+             concentration of a_cut + mass_floor signature species)
 
 Units are deliberately NOT normalized to [0,1] where that would hide
 the discrete-vs-continuous distinction (O_hered stays an integer).
@@ -95,6 +98,7 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
         out["O_hered"] = {
             "value": max(0, ms["n_attractors"] - 1), "defined": True,
             "kind": "discrete", "n_attractors": ms["n_attractors"],
+            "n_attractors_total": ms.get("n_attractors_total"),
             "n_kept": ms.get("n_kept")}
     else:
         out["O_hered"] = _undefined("no multistability block")
@@ -106,7 +110,9 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
         if pa is not None:
             out["O_select"] = {
                 "value": abs(pa - 0.5), "defined": True,
-                "kind": "probability", "n_reps": comp["n_reps"],
+                "kind": "probability", "scope": "conditional",
+                "condition": "O_hered > 0",
+                "n_reps": comp["n_reps"],
                 "init_protocol": comp.get("init_protocol")}
         else:
             out["O_select"] = _undefined("competition had no winner "
@@ -117,12 +123,24 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
     else:
         out["O_select"] = _undefined("no competition block")
 
-    # ---- O_assembly: joint MA + abundance signature -------------
+    # ---- O_assembly: absolute-MA + absolute-mass signature --------
     if eq is not None and "assembly_signature" in eq:
-        out["O_assembly"] = {
-            "value": eq["assembly_signature"]["mass_signature"],
-            "defined": True, "kind": "continuous",
-            "n_signature": eq["assembly_signature"]["n_signature"]}
+        sig = eq["assembly_signature"]
+        if "mass_signature_abs" in sig:
+            # new absolute-cut record: value is absolute monomer-mass
+            # concentration in signature species
+            out["O_assembly"] = {
+                "value": sig["mass_signature_abs"],
+                "defined": True, "kind": "continuous",
+                "a_cut": sig["a_cut"], "mass_floor": sig["mass_floor"],
+                "n_signature": sig["n_signature"],
+                "pool_ma_max": sig["pool_ma_max"]}
+        else:
+            out["O_assembly"] = {
+                "value": sig.get("mass_signature"),
+                "defined": True, "kind": "continuous",
+                "legacy_fraction": True,
+                "n_signature": sig.get("n_signature")}
     else:
         out["O_assembly"] = _undefined("no assembly block")
 

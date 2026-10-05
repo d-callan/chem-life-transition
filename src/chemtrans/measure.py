@@ -157,9 +157,10 @@ def measure_run(task: dict) -> dict:
                 "denominators": obs["denominators"],
                 "n_raf_channels": obs["n_raf_channels"],
                 "leading_eig_re": float(eigs[0].real),
+                "scaled_resid_max": float(np.max(det.residual_scaled)),
                 "nonzero_mass_species": int(np.sum(x > 1e-10)),
                 "m_poly": _nonfood_mass(net, x),
-                "assembly_signature": _assembly_sig(net, x, seed_key),
+                "assembly_signature": _assembly_sig(net, x, task),
                 "x_eq": x,
             }
         else:
@@ -249,6 +250,13 @@ def measure_run(task: dict) -> dict:
             init_policy = "reactor_x0_round"
         reps = []
         nonfood = ~net.is_food
+        comp_mass = (net.comp.sum(axis=0) if net.comp is not None
+                     else np.ones(net.n_species))
+        mass_floor = float(stoch.get("mass_floor", 0.01))
+        n_seed_dropped = None
+        if n0 is not None:
+            n_seed_dropped = int(np.sum(
+                (np.asarray(x0_det) > 0) & (n0 == 0)))
         for r_i in range(replicates):
             seed = derive_seed(f"{seed_key}|ssa|{r_i}")
             res = gillespie.simulate(
@@ -258,16 +266,24 @@ def measure_run(task: dict) -> dict:
                 record_dt=float(stoch.get("record_dt", t_max / 1000)))
             o = mass_raf_series(net, res.n, volume)
             nf = res.n[:, nonfood].sum(axis=1)
-            above = o > theta
-            idx_org = np.nonzero(above)[0]
-            if nf[0] > 0:
-                # seeded start: first time all nonfood counts hit zero
-                idx_ext = np.nonzero(nf == 0)[0]
-            elif len(idx_org):
-                # unseeded: only post-organization extinction is meaningful
-                idx_ext = np.nonzero(nf[idx_org[0]:] == 0)[0] + idx_org[0]
+            # absolute nonfood monomer-mass concentration
+            nf_mass = res.n[:, nonfood] @ comp_mass[nonfood] / volume
+            # organized = high RAF fraction AND above absolute mass floor
+            organized = (o > theta) & (nf_mass >= mass_floor)
+            # censor at censor_time: padded records must not count
+            mask = res.t <= res.censor_time + 1e-12
+            idx_org = np.nonzero(organized & mask)[0]
+            # quasi-extinction: first dip below the absolute mass floor
+            # after first organization (meaningful at eps>=0; the strict
+            # absorbing hit nf==0 is only possible at eps=0). Both are
+            # masked to post-organization — an absorbing hit at t=0 on a
+            # food-only start is vacuous, not an extinction.
+            if len(idx_org):
+                post = mask & (np.arange(len(nf_mass)) >= idx_org[0])
+                idx_abs = np.nonzero(post & (nf == 0))[0]
+                idx_ext = np.nonzero(post & (nf_mass < mass_floor))[0]
             else:
-                idx_ext = np.array([], dtype=int)
+                idx_abs = idx_ext = np.array([], dtype=int)
             reps.append({
                 "seed": seed,
                 "completed": res.completed,
@@ -280,12 +296,16 @@ def measure_run(task: dict) -> dict:
                                       if len(idx_org) else None),
                 "t_extinction": (float(res.t[idx_ext[0]])
                                  if len(idx_ext) else None),
-                "dwell_organized": float(above.mean()),
+                "t_absorbing": (float(res.t[idx_abs[0]])
+                                if len(idx_abs) else None),
+                "dwell_organized": float(organized[mask].mean()),
             })
         rec["stochastic"] = {
             "volume": volume, "replicates": reps,
             "n_replicates": len(reps),
             "theta_organized": theta,
+            "mass_floor": mass_floor,
+            "n_seed_dropped": n_seed_dropped,
             "init_policy": init_policy,
         }
     else:
@@ -320,17 +340,14 @@ def _nonfood_mass(net: ReactionNetwork, x: np.ndarray) -> float:
 
 
 def _assembly_sig(net: ReactionNetwork, x: np.ndarray,
-                  seed_key: str) -> dict:
-    """Null-calibrated joint assembly+abundance signature at x."""
-    rng = np.random.default_rng(derive_seed(seed_key + "|manull"))
-    lengths = sorted({len(s) for s in net.structure.values()})
-    thr = {L: assembly.ma_threshold(
-        assembly.null_ma_distribution(
-            rng, L, alphabet_size=int(net.params.get(
-                "alphabet_size", 2))))
-        for L in lengths}
-    return assembly.assembly_signature(net, np.asarray(x, float),
-                                       thr, abundance_floor=0.05)
+                  task: dict) -> dict:
+    """Absolute-threshold assembly signature (derived cut, absolute mass
+    floor). task['assembly'] may set a_cut / mass_floor overrides."""
+    a = (task or {}).get("assembly", {})
+    return assembly.assembly_signature_absolute(
+        net, np.asarray(x, float),
+        a_cut=a.get("a_cut"),
+        mass_floor=float(a.get("mass_floor", 0.01)))
 
 
 def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,
@@ -387,6 +404,12 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
             stable_ic.append(k)
     cl = heredity.cluster_attractors(net, stable_eqs, tol=0.05,
                                      min_mass=min_mass)
+    # joint composition+mass clustering: amplitude bistability (high/low
+    # branches with the same composition) is invisible to normalized
+    # signatures — report the joint count separately
+    cl_total = heredity.cluster_attractors(net, stable_eqs, tol=0.05,
+                                           min_mass=min_mass,
+                                           mass_ratio_tol=1.5)
     # representative member x_eq per organized cluster
     centers_x = {}
     for c in range(cl["n_attractors"]):
@@ -395,6 +418,7 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
             centers_x[c] = stable_eqs[idx[0]]
     return {
         "n_attractors": cl["n_attractors"],
+        "n_attractors_total": cl_total["n_attractors"],
         "n_certified": len(eqs),
         "n_stable": len(stable_eqs),
         "n_kept": cl["n_kept"],
@@ -406,6 +430,8 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
         "center_distances": heredity._pairwise(cl["centers"]),
         "min_mass": min_mass,
         "attractor_x0": {str(c): x.tolist() for c, x in centers_x.items()},
+        "attractor_masses": {str(c): float(_nonfood_mass(net, x))
+                             for c, x in centers_x.items()},
         "attractor_top_species": {
             str(c): net.species[int(np.argmax(
                 heredity.attractor_signature(net, x)))]

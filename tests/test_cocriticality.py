@@ -138,35 +138,44 @@ def _synthetic_net_series(lc, n_nets=4, n_pts=11, span=(0.5, 1.6)):
 
 
 def test_coincidence_matrix_synthetic():
-    """Coincident observables -> indistinguishable; separated ones ->
-    separated. Verdicts must cover the full matrix."""
+    """Coincident observables -> coincident_within_tol; separated ones
+    -> separated. Verdicts come from per-family paired diffs."""
     recs = _synthetic_net_series(lc=1.0)
     for r in recs:  # add a second observable shifted by +0.4
         lam = r["control"]["lam"]
-        r["life_vector"]["O_raf"] = {
+        r["life_vector"]["O_persist"] = {
             "defined": True,
             "value": float(max(0, lam - 1.4))}
     by_net = cc.group_by_network(recs)
     rep = cc.coincidence_report(
-        by_net, observables=("O_maint", "O_raf", "O_hered"),
+        by_net, observables=("O_maint", "O_persist", "O_hered"),
         n_boot=60, seed=1)
-    assert rep["pairwise"]["O_maint|O_raf"]["verdict"] == "separated"
-    assert rep["pairwise"]["O_maint|O_hered"]["verdict"] in (
-        "indistinguishable", "incomparable", "separated")
+    assert rep["pairwise"]["O_maint|O_persist"]["verdict"] == \
+        "separated"
+    assert rep["pairwise"]["O_maint|O_hered"]["verdict"] == \
+        "coincident_within_tol"
+    # per-family paired diffs are reported exactly
+    pd = rep["pairwise"]["O_maint|O_hered"]["paired_diffs"]
+    assert pd and all(abs(d) <= rep["tol_pair"] for d in pd.values())
     pe = rep["point_estimates"]
     assert pe["O_maint"]["lc"] == pytest.approx(1.0, abs=0.15)
-    assert pe["O_raf"]["lc"] == pytest.approx(1.4, abs=0.15)
     assert pe["O_hered"]["lc"] == pytest.approx(1.0, abs=0.15)
+    # per-family estimates exist for every family
+    assert set(rep["family_estimates"]["O_maint"]) == set(by_net)
 
 
-def test_undefined_observable_never_fit():
+def test_conditional_observable_never_fit():
+    """O_select is conditional on multistability: even when defined it
+    is never fit as a global lambda_c curve."""
     recs = _synthetic_net_series(lc=1.0)
     for r in recs:
-        r["life_vector"]["O_select"] = {"defined": False,
-                                        "value": None}
+        lam = r["control"]["lam"]
+        r["life_vector"]["O_select"] = {
+            "defined": True, "value": float(abs(lam - 1.0) > 0.2)}
     rep = cc.coincidence_report(
         cc.group_by_network(recs),
         observables=("O_maint", "O_select"), n_boot=20, seed=0)
     assert rep["point_estimates"]["O_select"]["lc"] is None
+    assert rep["family_estimates"]["O_select"] == {}
     assert rep["pairwise"]["O_maint|O_select"]["verdict"] == \
         "incomparable"

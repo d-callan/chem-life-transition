@@ -120,6 +120,10 @@ def _task_record(task_entry: dict) -> dict:
     rec = measure_run(task_entry["task"])
     rec["sweep"] = task_entry["sweep"]
     rec["net_replicate"] = task_entry["net_replicate"]
+    # family_id pairs the latent seed identity with network content:
+    # dynamical sweeps keep it fixed; generator sweeps change net_hash
+    # and therefore produce distinct families that are never paired.
+    rec["family_id"] = f"{task_entry['seed_key']}|{rec['net_hash']}"
     return rec
 
 
@@ -250,8 +254,16 @@ def cmd_summarize(args):
 
     sweep_paths = sorted({k for r in records for k in
                           r.get("sweep", {})})
-    control = sweep_paths[0] if sweep_paths else None
-    lam_label = control.split(".")[-1] if control else "lambda"
+    # explicit control axis: {"param", "direction", "label"}; falls back
+    # to first sorted sweep path + legacy control_negate flag
+    ax = manifest["protocol"].get("control_axis") or {}
+    control = ax.get("param") or (sweep_paths[0] if sweep_paths else None)
+    direction = ax.get("direction") or (
+        "negate" if manifest["protocol"].get("control_negate")
+        else "pos")
+    sign = -1.0 if direction == "negate" else 1.0
+    lam_label = ax.get("label") or (
+        control.split(".")[-1] if control else "lambda")
 
     # status counts
     statuses = {}
@@ -296,6 +308,8 @@ def cmd_summarize(args):
         "status_counts": statuses,
         "control": control,
         "control_label": lam_label,
+        "control_axis": {"param": control, "direction": direction,
+                         "label": lam_label},
         "order_parameter": op,
         "points": {str(k): v for k, v in sorted(pts.items())},
     }
@@ -326,12 +340,14 @@ def cmd_summarize(args):
                 "cocriticality mode requires a sweep control")
         from chemtrans.analysis import cocriticality as cc
         from chemtrans.observables.life_vector import life_vector
-        sign = -1.0 if manifest["protocol"].get(
-            "control_negate") else 1.0
         for r in records:
             r["life_vector"] = life_vector(r)
             r["control"] = {"axis": control,
-                            "lam": sign * float(r["sweep"][control])}
+                            "lam": sign * float(r["sweep"][control]),
+                            "label": lam_label,
+                            "direction": direction}
+            r.setdefault(
+                "family_id", f"{r.get('seed_key')}|{r['net_hash']}")
         summary["cocriticality"] = cc.coincidence_report(
             cc.group_by_network(records),
             n_boot=int(args.boot))

@@ -111,46 +111,77 @@ def ma_threshold(null_samples: np.ndarray, q: float = 0.95) -> float:
     return float(np.quantile(null_samples, q))
 
 
-def assembly_signature(
+def pool_ma_distribution(net, exact_limit: int = 12) -> dict:
+    """Exact assembly-index distribution over the non-food species pool.
+
+    Returns {a_max_exact, counts: {index: n_species}}. Counts only exact
+    estimates; species returning "bound" are tallied separately.
+    """
+    counts: dict[int, int] = {}
+    n_bound = 0
+    amax = 0
+    for i in range(net.n_species):
+        if net.is_food[i]:
+            continue
+        a, est = assembly_index(net.species[i], exact_limit=exact_limit)
+        if est == "exact":
+            counts[a] = counts.get(a, 0) + 1
+            amax = max(amax, a)
+        else:
+            n_bound += 1
+    return {"a_max_exact": amax, "counts": {str(k): v
+            for k, v in sorted(counts.items())},
+            "n_bound": n_bound}
+
+
+def assembly_signature_absolute(
     net,
     x: np.ndarray,
-    ma_thresholds: dict[int, float],
-    abundance_floor: float,
+    a_cut: int | None = None,
+    mass_floor: float = 0.0,
     exact_limit: int = 12,
 ) -> dict:
-    """Joint assembly+abundance signature over non-food species.
+    """Absolute-threshold assembly signature over non-food species.
 
-    ma_thresholds: {length: null-calibrated threshold}
-    abundance_floor: minimum monomer-mass fraction of total non-food
-        mass for "high abundance" (calibrated against shuffled/
-        unstructured nulls upstream).
+    A species is a signature hit iff its EXACT assembly index is
+    >= `a_cut` AND its absolute monomer-mass concentration is
+    >= `mass_floor`. `a_cut=None` derives the pool's maximal exact
+    index (top complexity class). `mass_floor` is an absolute
+    concentration, NOT a fraction — relative fractions spike when total
+    polymer mass collapses.
 
-    Returns per-species records plus the signature summary:
-      n_signature, mass_signature (fraction of non-food mass that is
-      jointly high-MA and high-abundance).
+    Returns the full (a, mass) spectrum plus:
+      a_cut, mass_floor, pool_ma_max, n_signature,
+      mass_signature_abs (absolute monomer-mass concentration of
+      signature species), mass_signature_frac (diagnostic only).
     """
     comp_mass = net.comp.sum(axis=0)
     nonfood = ~net.is_food
     total = float(comp_mass[nonfood] @ x[nonfood])
-    records = []
-    n_sig = 0
-    mass_sig = 0.0
+    dist = pool_ma_distribution(net, exact_limit=exact_limit)
+    cut = dist["a_max_exact"] if a_cut is None else int(a_cut)
+    records, n_sig, mass_sig, mass_sig_frac = [], 0, 0.0, 0.0
     for i in range(net.n_species):
         if not nonfood[i]:
             continue
         lab = net.species[i]
         a, est = assembly_index(lab, exact_limit=exact_limit)
-        frac = float(comp_mass[i] * x[i] / total) if total > 0 else 0.0
-        thr = ma_thresholds.get(len(lab))
-        high_ma = est == "exact" and thr is not None and a > thr
-        high_ab = frac >= abundance_floor
+        mass_abs = float(comp_mass[i] * x[i])
+        frac = mass_abs / total if total > 0 else 0.0
+        high_ma = est == "exact" and a >= cut
+        high_ab = mass_abs >= mass_floor
         sig = bool(high_ma and high_ab)
         n_sig += sig
-        mass_sig += frac * sig
+        mass_sig += mass_abs * sig
+        mass_sig_frac += frac * sig
         records.append({
             "species": i, "label": lab, "assembly": a, "estimator": est,
-            "mass_fraction": frac, "high_assembly": high_ma,
-            "high_abundance": high_ab, "signature": sig,
+            "mass_abs": mass_abs, "mass_fraction": frac,
+            "high_assembly": high_ma, "high_abundance": high_ab,
+            "signature": sig,
         })
-    return {"species": records, "n_signature": n_sig,
-            "mass_signature": mass_sig}
+    return {"species": records, "a_cut": cut, "mass_floor": mass_floor,
+            "pool_ma_max": dist["a_max_exact"],
+            "pool_ma_dist": dist["counts"], "n_pool_bound": dist["n_bound"],
+            "n_signature": n_sig, "mass_signature_abs": mass_sig,
+            "mass_signature_frac": mass_sig_frac}

@@ -99,3 +99,71 @@ def test_signature_is_compositional():
     assert np.isclose(sig.sum(), 1.0)
     same = heredity.compositional_distance(sig, sig)
     assert same == 0.0
+
+
+def _max_ma_label(net):
+    """Label of a highest-exact-MA species in the pool."""
+    best, ba = None, -1
+    for i in range(net.n_species):
+        if net.is_food[i]:
+            continue
+        a, est = assembly.assembly_index(net.species[i])
+        if est == "exact" and a > ba:
+            best, ba = net.species[i], a
+    return best, ba
+
+
+def test_assembly_signature_absolute_positive_control():
+    """All nonfood mass in the maximal-MA species -> signature fires."""
+    net = polymer_network(alphabet_size=2, max_len=4, seed=0)
+    lab, amax = _max_ma_label(net)
+    x = np.zeros(net.n_species)
+    x[0] = 0.5                              # food
+    i = net.species.index(lab)
+    x[i] = 0.2
+    sig = assembly.assembly_signature_absolute(
+        net, x, a_cut=None, mass_floor=0.01)
+    assert sig["a_cut"] == amax
+    assert sig["n_signature"] == 1
+    assert sig["mass_signature_abs"] == 0.2 * len(lab)
+    # full spectrum emitted
+    nonfood = sum(1 for i in range(net.n_species)
+                  if not net.is_food[i])
+    assert len(sig["species"]) == nonfood
+
+
+def test_assembly_signature_absolute_mass_floor():
+    """Trace mass below the absolute floor must not sign even when it
+    is a large FRACTION of a collapsing pool."""
+    net = polymer_network(alphabet_size=2, max_len=4, seed=0)
+    lab, amax = _max_ma_label(net)
+    x = np.zeros(net.n_species)
+    x[0] = 0.5
+    i = net.species.index(lab)
+    x[i] = 1e-6                             # 100% of nonfood mass, tiny abs
+    sig = assembly.assembly_signature_absolute(
+        net, x, a_cut=amax, mass_floor=0.01)
+    assert sig["n_signature"] == 0
+    assert sig["mass_signature_abs"] == 0.0
+    # but the fraction diagnostic still sees it as "high" — proving the
+    # floor is what vetoes, not the fraction
+    rec = [r for r in sig["species"] if r["label"] == lab][0]
+    assert rec["high_assembly"] and not rec["high_abundance"]
+    assert rec["mass_fraction"] == 1.0
+
+
+def test_assembly_signature_explicit_cut():
+    net = polymer_network(alphabet_size=2, max_len=4, seed=0)
+    x = np.zeros(net.n_species)
+    x[0] = 0.5
+    for i in range(net.n_species):
+        if not net.is_food[i]:
+            x[i] = 0.1                      # all species abundant
+    sig = assembly.assembly_signature_absolute(
+        net, x, a_cut=1, mass_floor=0.01)
+    assert sig["a_cut"] == 1
+    assert sig["n_signature"] == sig["n_signature"] > 0
+    # bound estimators never qualify
+    for r in sig["species"]:
+        if r["estimator"] == "bound":
+            assert not r["high_assembly"]

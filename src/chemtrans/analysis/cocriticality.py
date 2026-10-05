@@ -1,21 +1,31 @@
 """Co-criticality: do independently-defined life-observables share λc?
 
 Pipeline:
-  1. extract per-network (lam, O_k) series from life_vector components
-  2. per-observable critical-point estimation:
-       continuous -> fit_all_models model selection, λc from the
-                     selected model (none if null/ramp wins)
-       discrete   -> changepoint: earliest λ where P(O > 0) >= 0.5
-                     across networks, with binomial uncertainty
-  3. paired network-joint bootstrap: resample WHOLE networks, refit
-     every observable on the same resample, take differences
-     D_jk = λc_j - λc_k. Pairwise verdicts:
+  1. group records into network FAMILIES (family_id; falls back to
+     net_hash). A family = one fixed network content swept over the
+     control axis. Networks are never pooled into a single regression:
+     different random networks have different intrinsic λc, and pooled
+     fits smear family-specific transitions into false crossovers.
+  2. per-family critical-point estimation:
+       continuous -> fit_all_models model selection per family
+       discrete   -> per-family changepoint: earliest λ where O > 0
+  3. PAIRED differences D_jk(fam) = λc_j - λc_k over families where
+     both are defined. Verdicts:
 
-       "indistinguishable" : CI95(D_jk) contains 0 — failure to
-                             reject equality, NOT proof (report width)
-       "separated"         : CI95(D_jk) excludes 0
-       "incomparable"      : one or both observables lack a defined
-                             λc in >= `min_defined_frac` of resamples
+       "coincident_within_tol" : max |D| <= tol_pair   (small-N exact)
+       "coincident"            : TOST — 90% CI of mean D inside
+                                 ±tol_pair                            (N large)
+       "separated"             : min |D| > tol_pair    (small-N) OR
+                                 95% CI of mean D excludes 0 (N large)
+       "mixed"                 : some families inside tol, some out
+       "inconclusive"          : CI straddles 0 AND ±tol_pair
+       "incomparable"          : no family has both λc defined
+
+Observable classes: CONTINUOUS/DISCRETE are fit by default.
+STRUCTURAL (O_raf) is a fixed-network-ensemble property — excluded
+from the default set but fittable if explicitly requested.
+CONDITIONAL (O_select) is only meaningful inside the multistable
+regime and is NEVER fit as a global λc curve.
 """
 
 from __future__ import annotations
@@ -26,8 +36,11 @@ import numpy as np
 
 from .critical_points import fit_all_models
 
-CONTINUOUS = ("O_raf", "O_maint", "O_persist", "O_select", "O_assembly")
+CONTINUOUS = ("O_maint", "O_persist", "O_assembly")
 DISCRETE = ("O_hered",)
+CONDITIONAL = ("O_select",)
+STRUCTURAL = ("O_raf",)
+DEFAULT_OBSERVABLES = CONTINUOUS + DISCRETE
 
 # map selected model -> (params key holding λc, transition class)
 _LC_MAP = {"hinge": ("lc", "onset"),
@@ -45,11 +58,22 @@ class LcEstimate:
 
 
 def group_by_network(records: list[dict]) -> dict[str, list[dict]]:
-    """records: run dicts carrying a 'life_vector' or raw blocks."""
+    """Group records into families for PAIRED analysis.
+
+    Key: rec["family_id"] if present (composite seed|content identity
+    written by the campaign runner), else net_hash. A family = one
+    fixed network swept over the control axis; sweeps that touch
+    generator params produce different net_hash and therefore
+    different families — they are never paired.
+    """
     by_net: dict[str, list[dict]] = {}
     for r in records:
-        by_net.setdefault(r["net_hash"], []).append(r)
+        key = r.get("family_id") or r["net_hash"]
+        by_net.setdefault(key, []).append(r)
     return by_net
+
+
+group_by_family = group_by_network
 
 
 def extract_series(by_net: dict[str, list[dict]],
@@ -129,8 +153,43 @@ def estimate_lc_discrete(by_net_series: dict, active_pred,
                        "active_fraction": frac_dict})
 
 
+def _lc_discrete_family(lam: np.ndarray, y: np.ndarray) -> LcEstimate:
+    """Per-family changepoint: earliest λ where the observable is active."""
+    order = np.argsort(lam)
+    lam, y = np.asarray(lam)[order], np.asarray(y)[order]
+    hits = np.nonzero(y > 0)[0]
+    if not len(hits):
+        return LcEstimate(None, "none", {})
+    i = int(hits[0])
+    return LcEstimate(
+        float(lam[i]), "discrete_changepoint",
+        {"lc_lo": float(lam[i - 1]) if i else None,
+         "lc_hi": float(lam[i + 1]) if i + 1 < len(lam) else None})
+
+
+def lc_by_family(by_net: dict[str, list[dict]], obs: str,
+                 seed: int = 0) -> dict[str, LcEstimate]:
+    """{family: LcEstimate} — a fit per family, never pooled."""
+    if obs in CONDITIONAL:
+        return {}
+    series = extract_series(by_net, obs)
+    out = {}
+    for fam, (lam, y) in series.items():
+        if obs in DISCRETE:
+            out[fam] = _lc_discrete_family(lam, y)
+        else:
+            out[fam] = estimate_lc_continuous(lam, y, seed=seed)
+    return out
+
+
 def _lc_for_obs(by_net: dict[str, list[dict]], obs: str,
                 seed: int) -> LcEstimate:
+    """Pooled estimate over families — kept for reference only; pooled
+    curves mix heterogeneous networks and are NOT used for verdicts."""
+    if obs in CONDITIONAL:
+        return LcEstimate(None, "conditional",
+                          {"note": "only defined inside the multistable "
+                                   "regime; never fit as a global curve"})
     series = extract_series(by_net, obs)
     if not series:
         return LcEstimate(None, "undefined", {})
@@ -141,62 +200,101 @@ def _lc_for_obs(by_net: dict[str, list[dict]], obs: str,
     return estimate_lc_continuous(lam, y, seed=seed)
 
 
-def coincidence_report(by_net: dict[str, list[dict]],
-                       observables: tuple[str, ...] = CONTINUOUS + DISCRETE,
-                       n_boot: int = 400, seed: int = 0,
-                       min_defined_frac: float = 0.5) -> dict:
-    """Full pairwise coincidence matrix over observables.
+def _grid_resolution(by_net: dict[str, list[dict]]) -> float | None:
+    """Median spacing of the swept control grid across all records."""
+    lams = sorted({float(r["control"]["lam"])
+                   for recs in by_net.values() for r in recs
+                   if "control" in r and r["control"].get("lam") is not None})
+    if len(lams) < 2:
+        return None
+    d = np.diff(np.asarray(lams))
+    return float(np.median(d))
 
-    Bootstrap unit = whole network (all its λ-points and all
-    observables resampled together). λc is refit per resample.
+
+def coincidence_report(by_net: dict[str, list[dict]],
+                       observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
+                       n_boot: int = 400, seed: int = 0,
+                       tol_pair: float | None = None,
+                       exact_table_max: int = 12) -> dict:
+    """Pairwise coincidence matrix from PER-FAMILY paired λc diffs.
+
+    tol_pair: equivalence margin in λ units. None -> 2x median grid
+    spacing (below one grid step, coincidence cannot be resolved).
+    Small N (<= exact_table_max defined pairs): exact per-family
+    difference table, no bootstrap. Large N: bootstrap the mean
+    difference over families; TOST (90% CI inside ±tol_pair) =>
+    "coincident"; 95% CI excluding 0 => "separated"; else inconclusive.
     """
     rng = np.random.default_rng(seed)
-    hashes = sorted(by_net)
-    n = len(hashes)
+    fams = sorted(by_net)
+    n = len(fams)
 
+    grid_res = _grid_resolution(by_net)
+    if tol_pair is None:
+        tol_pair = 2 * grid_res if grid_res else 0.1
+
+    per_fam = {o: lc_by_family(by_net, o, seed) for o in observables}
     point_ests = {o: _lc_for_obs(by_net, o, seed) for o in observables}
-
-    boot_lc: dict[str, list] = {o: [] for o in observables}
-    for _ in range(n_boot):
-        idx = rng.integers(0, n, n)
-        resampled = {f"{hashes[i]}#{b}": by_net[hashes[i]]
-                     for b, i in enumerate(idx)}
-        s = int(rng.integers(2**31))
-        for o in observables:
-            boot_lc[o].append(_lc_for_obs(resampled, o, s).lc)
 
     matrix = {}
     for j, oj in enumerate(observables):
         for ok in observables[j + 1:]:
-            a = np.asarray([v if v is not None else np.nan
-                            for v in boot_lc[oj]])
-            b = np.asarray([v if v is not None else np.nan
-                            for v in boot_lc[ok]])
-            both = np.isfinite(a) & np.isfinite(b)
-            if both.mean() < min_defined_frac:
-                verdict, d = "incomparable", np.array([np.nan])
+            diffs = {f: (per_fam[oj][f].lc - per_fam[ok][f].lc)
+                     for f in fams
+                     if f in per_fam[oj] and f in per_fam[ok]
+                     and per_fam[oj][f].lc is not None
+                     and per_fam[ok][f].lc is not None}
+            n_pairs = len(diffs)
+            entry = {"n_pairs": n_pairs,
+                     "paired_diffs": {f: float(d)
+                                      for f, d in diffs.items()}}
+            if n_pairs == 0:
+                entry["verdict"] = "incomparable"
+            elif n_pairs <= exact_table_max:
+                d = np.asarray(list(diffs.values()))
+                mx, mn = float(np.abs(d).max()), float(np.abs(d).min())
+                if mx <= tol_pair:
+                    verdict = "coincident_within_tol"
+                elif mn > tol_pair:
+                    verdict = "separated"
+                else:
+                    verdict = "mixed"
+                entry.update({"verdict": verdict,
+                              "max_abs_diff": mx,
+                              "mean_diff": float(d.mean()),
+                              "estimator": "exact_table"})
             else:
-                d = a[both] - b[both]
-                lo, hi = np.quantile(d, [0.025, 0.975])
-                verdict = ("separated" if lo > 0 or hi < 0
-                           else "indistinguishable")
-            matrix[f"{oj}|{ok}"] = {
-                "verdict": verdict,
-                "frac_both_defined": float(both.mean()),
-                "ci95_width": (float(np.quantile(d, 0.975)
-                                     - np.quantile(d, 0.025))
-                               if np.isfinite(d).any() else None),
-                "d_ci95": ([float(np.quantile(d, 0.025)),
-                            float(np.quantile(d, 0.975))]
-                           if np.isfinite(d).any() else None),
-            }
+                d = np.asarray(list(diffs.values()))
+                boot = np.array([
+                    d[rng.integers(0, n_pairs, n_pairs)].mean()
+                    for _ in range(n_boot)])
+                lo90, hi90 = np.quantile(boot, [0.05, 0.95])
+                lo95, hi95 = np.quantile(boot, [0.025, 0.975])
+                if lo90 >= -tol_pair and hi90 <= tol_pair:
+                    verdict = "coincident"          # TOST equivalence
+                elif lo95 > 0 or hi95 < 0:
+                    verdict = "separated"
+                else:
+                    verdict = "inconclusive"
+                entry.update({"verdict": verdict,
+                              "mean_diff": float(d.mean()),
+                              "ci90": [float(lo90), float(hi90)],
+                              "ci95": [float(lo95), float(hi95)],
+                              "estimator": "paired_bootstrap"})
+            matrix[f"{oj}|{ok}"] = entry
     return {
+        "family_estimates": {
+            o: {f: {"lc": e.lc, "class": e.transition_class}
+                for f, e in per_fam[o].items()}
+            for o in observables},
         "point_estimates": {
             o: {"lc": e.lc, "class": e.transition_class,
-                "detail": e.detail}
+                "detail": e.detail, "pooled": True}
             for o, e in point_ests.items()},
         "pairwise": matrix,
-        "n_boot": n_boot, "n_networks": n,
-        "note": ("'indistinguishable' = failure to reject equality; "
-                 "compare ci95_width to the sweep resolution"),
+        "n_families": n, "n_boot": n_boot,
+        "tol_pair": tol_pair, "grid_resolution": grid_res,
+        "note": ("verdicts use per-family paired differences, not "
+                 "pooled fits; 'coincident*' is an equivalence verdict "
+                 "inside tol_pair, not failure-to-reject"),
     }
