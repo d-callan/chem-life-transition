@@ -53,3 +53,66 @@ Caveats discovered during the bring-up (all fixed):
   written on re-run).
 - Schlögl benchmark needed catalyst-role reservoirs to produce a real
   fold (unconsumed reservoir species -> clamped coefficients).
+
+## E1/E2 campaign results (data/validation/e1land, e2dmu, e2pcat, e2chi, e2d)
+
+E1 structural landscape (120 runs, structural mode): RAF frequency
+rises with connectivity and selfrep bias — 0 at p_cat=0, ~0.12-0.88
+across p_selfrep at mid connectivity, 1.0 at p_cat=1. Structural
+percolation-like response only; NOT dynamical evidence.
+
+E2 fixed-network sweeps on 6 nets (3 RAF+, 3 RAF- selected
+deterministically from the p_cat=0.5/p_selfrep=0.3 cell):
+
+- dmu sweep (0..8): smooth graded mass_raf on RAF+ nets, 0 on RAF-.
+  Thermal channels keep equilibrium polymer mass nonzero — no
+  bifurcation along the energy-drive axis in this window.
+- chi sweep (0..1): steep onset between chi=0 and 0.2 on RAF+ nets,
+  mild decline at high chi (fuel crowding out monomer feed).
+- D sweep (0.01..0.4): mass_raf rises with D (more fuel throughput);
+  net7 OSCILLATORY at D=0.01.
+- p_cat sweep: sharp per-network turn-ons, but this axis is a
+  STRUCTURAL RAF-formation threshold, not a fixed-network bifurcation.
+
+Absorbing-limit probe (eps=0, not yet a protocol): on RAF+ nets the
+organized branch decays continuously to zero polymer mass at
+D_c ~ 1.10-1.15 with leading eigenvalue -> 0^- monotonically —
+continuous (transcritical-like) transition with mean-field beta~1
+scaling; mass_raf itself saturates at 1 while organized (the true
+order parameter along this branch is total polymer mass).
+
+Gate B on linear model (cat_power=1): n_attractors=1 for all nets —
+no compositional multistability, consistent with the theory that
+linear catalysis gives only transcritical organization. Heredity is
+not supported at cat_power=1.
+
+### Cooperative catalysis extension (cat_power=2, §5.7-style)
+
+Added `cat_power` (integer >=1, default 1): catalytic boost becomes
+kappa * sum_c x_c^p, SSA analog = p catalyst copies in the hazard
+participants. Physically: catalysis by a p-mer complex. All 37 tests
+pass; cat_power=1 is behavior-identical.
+
+Exploratory scan (16 seeds, p_cat=0.6, p_selfrep=0.5, eps=0, D=0.05):
+compositional MULTISTABILITY found — e.g. seed 4 has three organized
+attractors {ABBB}, {BA}, {AA}; seed 1 three {ABB},{AAAA},{mix};
+seed 6 two {BAAB},{AAAA}. Winner-take-all competition over the shared
+activated-monomer pool.
+
+Serial-transfer heredity test (seed-4 net, d=4x, tau=20, 6 cycles):
+each lineage returns to its OWN attractor signature exactly
+(dist=0.0 to self, 1.0 to others) — compositional heredity
+demonstrated at the attractor level. Compositional injection pulses
+(0.01..1.0 of a rival's dominant species) collapse to the dead state
+rather than switching basins — mutually exclusive basins separated
+by the absorbing dead state. All three lineages survive 32x dilution
+deterministically; differential survival requires finite-copy SSA.
+
+## Future items (deferred, user-noted)
+
+- (a) Formal E2b continuation + imperfect-bifurcation fit vs eps to
+  certify the transcritical form quantitatively (extract beta, delta
+  field response, eps-rounding scaling).
+- (b) E3 SSA persistence/volume-scaling of extinction times near
+  D_c at eps->0 — distinguish true absorbing transition from
+  crossover by V in {1,4,16,64} and eps in {1,1e-2,1e-4,0}.

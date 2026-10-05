@@ -1,0 +1,46 @@
+{
+  "name": "e2d",
+  "experiment": "E2_cstr_bifurcation_dilution",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 20.0
+    },
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.05,
+      "t_max": 400.0
+    }
+  },
+  "sweeps": [
+    {
+      "param": "reactor.dilution",
+      "values": [
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.2,
+        0.4
+      ]
+    }
+  ],
+  "seed_keys": [
+    "e1land|net0",
+    "e1land|net3",
+    "e1land|net7",
+    "e1land|net1",
+    "e1land|net2",
+    "e1land|net4"
+  ],
+  "order_parameter": "mass_raf",
+  "out_dir": "data/validation"
+}

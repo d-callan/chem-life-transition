@@ -76,10 +76,12 @@ def build_processes(net: ReactionNetwork, dilution: float,
                     rate=k, participants=parts, offsets=_mk_offsets(list(parts)),
                     delta=delta, kind="channel", channel=r))
         for c in ch.catalysts:
+            # cooperative catalysis: cat_power copies of c participate
+            cat_parts = (c,) * net.cat_power
             for direction, parts, delta, k in (
-                    ("fwd", ch.factors("fwd") + (c,), fwd_delta,
+                    ("fwd", ch.factors("fwd") + cat_parts, fwd_delta,
                      ch.k_f * net.kappa),
-                    ("rev", ch.factors("rev") + (c,), rev_delta,
+                    ("rev", ch.factors("rev") + cat_parts, rev_delta,
                      ch.k_r * net.kappa)):
                 if k > 0:
                     procs.append(Process(

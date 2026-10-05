@@ -108,6 +108,7 @@ class ReactionNetwork:
         food_inlet=None,
         kappa=1.0,
         eps=1.0,
+        cat_power=1,
         params=None,
     ):
         self.species = tuple(str(s) for s in species)
@@ -116,6 +117,9 @@ class ReactionNetwork:
         self.structure = dict(structure or {})
         self.kappa = float(kappa)
         self.eps = float(eps)
+        if not float(cat_power).is_integer() or int(cat_power) < 1:
+            raise ValueError("cat_power must be a positive integer")
+        self.cat_power = int(cat_power)
         self.params = dict(params or {})
 
         n = len(self.species)
@@ -265,7 +269,7 @@ class ReactionNetwork:
         kf, kr, synth = self._rate_vectors()
         C = self.catalysis_matrix()
         bg = np.where(synth, eps, 1.0)
-        boost = bg + self.kappa * (C @ x)
+        boost = bg + self.kappa * (C @ np.power(x, self.cat_power))
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
         return kf * mf * boost, kr * mr * boost
@@ -290,7 +294,7 @@ class ReactionNetwork:
         kf, kr, synth = self._rate_vectors()
         C = self.catalysis_matrix()
         bg = np.where(synth, eps, 1.0)
-        Cx = C @ x
+        Cx = C @ np.power(x, self.cat_power)
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
 
@@ -313,11 +317,14 @@ class ReactionNetwork:
                     axis=0,
                 ) if len(fac_r) > 1 else 1.0
                 Db[r, s] += kr[r] * (bg[r] + self.kappa * Cx[r]) * others
-            # catalysts contribute via boost: d(k*mass*kappa*x_c)/dx_c
+            # catalysts contribute via boost: d(k*mass*kappa*x_c^p)/dx_c
             cat_idx = np.nonzero(C[r])[0]
             if len(cat_idx):
-                Df[r, cat_idx] += kf[r] * mf[r] * self.kappa
-                Db[r, cat_idx] += kr[r] * mr[r] * self.kappa
+                dpow = (self.cat_power
+                        * np.power(np.maximum(x[cat_idx], 0.0),
+                                   self.cat_power - 1))
+                Df[r, cat_idx] += kf[r] * mf[r] * self.kappa * dpow
+                Db[r, cat_idx] += kr[r] * mr[r] * self.kappa * dpow
         return Df, Db
 
     def jacobian(
@@ -405,6 +412,7 @@ class ReactionNetwork:
             "g": self.g.tolist() if self.g is not None else None,
             "kappa": self.kappa,
             "eps": self.eps,
+            "cat_power": self.cat_power,
             "params": self.params,
             "channels": [
                 {
@@ -449,6 +457,7 @@ class ReactionNetwork:
             food_inlet=np.array(d["food_inlet"]),
             kappa=d["kappa"],
             eps=d["eps"],
+            cat_power=d.get("cat_power", 1),
             params=d.get("params"),
         )
 
@@ -467,6 +476,7 @@ class ReactionNetwork:
             food_inlet=self.food_inlet,
             kappa=self.kappa,
             eps=self.eps,
+            cat_power=self.cat_power,
             params=self.params,
         )
         kw.update(overrides)

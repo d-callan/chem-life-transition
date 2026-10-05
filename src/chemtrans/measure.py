@@ -98,7 +98,27 @@ def measure_run(task: dict) -> dict:
                                       "eps": eps}, seed_key)
 
     # ---- deterministic ----
-    if rtype == "cstr":
+    if rtype == "structural":
+        # E1: structural landscape only — RAF topology without dynamics.
+        core = closure.raf_reactions(net)
+        core_sp = closure.raf_species(net)
+        kin = closure.kinetic_accessible(net)
+        n_elong = sum(c.mechanism == "elongation" for c in net.channels)
+        rec["det"] = {"type": "structural", "status": "NA"}
+        rec["structural"] = {
+            "n_raf_channels": len(core),
+            "n_raf_species": len(core_sp),
+            "n_catalyzed": int(sum(bool(c.catalysts)
+                                   for c in net.channels)),
+            "n_elong_channels": n_elong,
+            "realized_p_cat": (sum(bool(c.catalysts) for c in net.channels
+                                   if c.mechanism == "elongation")
+                               / max(n_elong, 1)),
+            "n_kinetic_accessible": len(kin),
+            "raf_fraction_channels": len(core) / max(net.n_channels, 1),
+            "raf_labels": sorted(net.species[i] for i in core_sp),
+        }
+    elif rtype == "cstr":
         det = ode.integrate_cstr(
             net, t_max=float(reactor.get("t_max", 200.0)),
             dilution=dilution, eps=eps,
@@ -176,15 +196,27 @@ def measure_run(task: dict) -> dict:
         volume = float(stoch.get("volume", 100.0))
         replicates = int(stoch.get("replicates", 3))
         t_max = float(stoch.get("t_max", reactor.get("t_max", 200.0)))
+        theta = float(stoch.get("theta_organized", 0.1))
+        n0 = None
+        init_policy = "food"
+        if stoch.get("x0_from") == "reactor" and "x0" in reactor:
+            n0 = gillespie.counts_from_concentration(
+                np.asarray(reactor["x0"], dtype=float), volume)
+            init_policy = "reactor_x0_round"
         reps = []
+        nonfood = ~net.is_food
         for r_i in range(replicates):
             seed = derive_seed(f"{seed_key}|ssa|{r_i}")
             res = gillespie.simulate(
                 net, t_max=t_max, dilution=dilution, volume=volume,
-                eps=eps, seed=seed,
+                eps=eps, seed=seed, n0=n0,
                 max_events=int(stoch.get("max_events", 2_000_000)),
                 record_dt=float(stoch.get("record_dt", t_max / 1000)))
             o = mass_raf_series(net, res.n, volume)
+            nf = res.n[:, nonfood].sum(axis=1)
+            above = o > theta
+            idx_org = np.nonzero(above)[0]
+            idx_ext = np.nonzero(nf == 0)[0]
             reps.append({
                 "seed": seed,
                 "completed": res.completed,
@@ -193,10 +225,17 @@ def measure_run(task: dict) -> dict:
                 "events": res.events,
                 "O_final": float(o[-1]),
                 "O_max": float(o.max()),
+                "t_first_organized": (float(res.t[idx_org[0]])
+                                      if len(idx_org) else None),
+                "t_extinction": (float(res.t[idx_ext[0]])
+                                 if len(idx_ext) else None),
+                "dwell_organized": float(above.mean()),
             })
         rec["stochastic"] = {
             "volume": volume, "replicates": reps,
             "n_replicates": len(reps),
+            "theta_organized": theta,
+            "init_policy": init_policy,
         }
     else:
         rec["stochastic"] = None

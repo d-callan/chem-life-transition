@@ -1,0 +1,26 @@
+{
+  "name": "e1land",
+  "experiment": "E1_structural_raf_landscape",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 20.0
+    },
+    "reactor": {"type": "structural"}
+  },
+  "sweeps": [
+    {"param": "generator.p_cat", "values": [0.0, 0.25, 0.5, 0.75, 1.0]},
+    {"param": "generator.p_selfrep", "values": [0.0, 0.3, 0.6]}
+  ],
+  "n_networks": 8,
+  "order_parameter": "structural.n_raf_channels",
+  "out_dir": "data/validation"
+}

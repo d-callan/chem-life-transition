@@ -59,16 +59,20 @@ def expand_tasks(protocol: dict) -> list[dict]:
     sweeps = protocol["sweeps"]
     paths = [s["param"] for s in sweeps]
     values = [s["values"] for s in sweeps]
-    n_nets = int(protocol.get("n_networks", 1))
+    # network replicates: explicit seed_keys (carry-forward from a prior
+    # campaign) or n_networks generated from the protocol name
+    seed_keys = protocol.get("seed_keys")
+    if seed_keys is None:
+        seed_keys = [f"{protocol['name']}|net{rep}"
+                     for rep in range(int(protocol.get("n_networks", 1)))]
     tasks = []
-    for rep in range(n_nets):
+    for rep, seed_key in enumerate(seed_keys):
         for combo in product(*values):
             spec = json.loads(json.dumps(protocol["task"]))
             lam = {}
             for path, v in zip(paths, combo):
                 spec = _set_path(spec, path, v)
                 lam[path] = v
-            seed_key = f"{protocol['name']}|net{rep}"
             spec["seed_key"] = seed_key   # inside spec: drives all seeds
             tasks.append({"task": spec, "sweep": lam,
                           "seed_key": seed_key, "net_replicate": rep})
@@ -257,27 +261,30 @@ def cmd_summarize(args):
     # order parameter vs control (certified equilibria only)
     op = manifest["protocol"].get("order_parameter", "mass_raf")
 
-    def extract_y(eq):
-        if eq is None:
-            return None
+    def extract_y(rec):
+        """Resolve order parameter: 'mass_raf' (from equilibrium),
+        'x_eq:IDX', or a dotted path into the record."""
+        eq = rec.get("equilibrium")
         if op == "mass_raf":
-            return eq["mass_raf"]
+            return eq["mass_raf"] if eq else None
         if op.startswith("x_eq:"):
-            return eq["x_eq"][int(op.split(":")[1])]
-        if op in eq:
-            return eq[op]
-        raise ValueError(f"unknown order_parameter {op!r}")
+            return eq["x_eq"][int(op.split(":")[1])] if eq else None
+        node = rec
+        for part in op.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                return None
+        return node
 
     pts = {}
     for r in records:
         if control is None:
             continue
         lam = r["sweep"][control]
-        eq = r.get("equilibrium")
         pts.setdefault(float(lam), []).append(
             {"run_id": r["run_id"], "net": r["net_hash"],
              "lam": lam,
-             "y": extract_y(eq),
+             "y": extract_y(r),
              "status": r["det"]["status"]})
 
     summary = {

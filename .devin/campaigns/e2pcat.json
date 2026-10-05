@@ -1,0 +1,47 @@
+{
+  "name": "e2pcat",
+  "experiment": "E2_cstr_bifurcation_p_cat",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 20.0
+    },
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.05,
+      "t_max": 400.0
+    }
+  },
+  "sweeps": [
+    {
+      "param": "generator.p_cat",
+      "values": [
+        0.0,
+        0.2,
+        0.35,
+        0.5,
+        0.65,
+        0.8,
+        0.95
+      ]
+    }
+  ],
+  "seed_keys": [
+    "e1land|net0",
+    "e1land|net3",
+    "e1land|net7",
+    "e1land|net1",
+    "e1land|net2",
+    "e1land|net4"
+  ],
+  "order_parameter": "mass_raf",
+  "out_dir": "data/validation"
+}
