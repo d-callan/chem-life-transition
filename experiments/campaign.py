@@ -326,10 +326,12 @@ def cmd_summarize(args):
                 "cocriticality mode requires a sweep control")
         from chemtrans.analysis import cocriticality as cc
         from chemtrans.observables.life_vector import life_vector
+        sign = -1.0 if manifest["protocol"].get(
+            "control_negate") else 1.0
         for r in records:
             r["life_vector"] = life_vector(r)
             r["control"] = {"axis": control,
-                            "lam": float(r["sweep"][control])}
+                            "lam": sign * float(r["sweep"][control])}
         summary["cocriticality"] = cc.coincidence_report(
             cc.group_by_network(records),
             n_boot=int(args.boot))

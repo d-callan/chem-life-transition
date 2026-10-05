@@ -19,7 +19,8 @@
     "reactor": {
       "type": "cstr",
       "dilution": 0.5,
-      "t_max": 600.0
+      "t_max": 600.0,
+      "x0_policy": "dense",
     }
   },
   "sweeps": [

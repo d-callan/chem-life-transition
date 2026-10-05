@@ -118,14 +118,22 @@ def measure_run(task: dict) -> dict:
     }
 
     # ---- deterministic ----
+    if "x0" in reactor:
+        x0_det = np.asarray(reactor["x0"], float)
+    elif reactor.get("x0_policy") == "dense":
+        x0_det = net.food_inlet.copy()
+        x0_det[~net.is_food] = float(reactor.get("x0_level", 0.15))
+    elif reactor.get("x0_policy") == "food_only":
+        x0_det = net.food_inlet.copy()
+    else:
+        x0_det = None
     if rtype == "structural":
         # E1: structural landscape only — RAF topology without dynamics.
         rec["det"] = {"type": "structural", "status": "NA"}
     elif rtype == "cstr":
         det = ode.integrate_cstr(
             net, t_max=float(reactor.get("t_max", 200.0)),
-            dilution=dilution, eps=eps,
-            x0=np.asarray(reactor["x0"]) if "x0" in reactor else None,
+            dilution=dilution, eps=eps, x0=x0_det,
             n_points=int(reactor.get("n_points", 400)))
         rec["det"] = {
             "type": rtype,
@@ -165,7 +173,7 @@ def measure_run(task: dict) -> dict:
         tau = float(reactor["tau"])
         d_factor = float(reactor["d_factor"])
         n_cycles = int(reactor.get("n_cycles", 40))
-        x0 = (np.asarray(reactor["x0"]) if "x0" in reactor
+        x0 = (x0_det if x0_det is not None
               else net.food_inlet.copy())
         starts, ends = ode.sd_map(net, x0, tau, d_factor, n_cycles, eps)
         # fixed-point check: start drift over last 5 cycles
@@ -235,9 +243,9 @@ def measure_run(task: dict) -> dict:
         theta = float(stoch.get("theta_organized", 0.1))
         n0 = None
         init_policy = "food"
-        if stoch.get("x0_from") == "reactor" and "x0" in reactor:
+        if stoch.get("x0_from") == "reactor" and x0_det is not None:
             n0 = gillespie.counts_from_concentration(
-                np.asarray(reactor["x0"], dtype=float), volume)
+                np.asarray(x0_det, dtype=float), volume)
             init_policy = "reactor_x0_round"
         reps = []
         nonfood = ~net.is_food
@@ -366,22 +374,33 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
         if r.converged:
             eqs.append(r.x_eq)
             organized_ic.append(k)
-    cl = heredity.cluster_attractors(net, eqs, tol=0.05,
+    # stability certification: a "STATIONARY" endpoint with a positive
+    # leading Jacobian eigenvalue is an unstable fixed point or slow
+    # transient, not an attractor — exclude it (ghost class #2).
+    stable_eqs, stable_ic = [], []
+    for x, k in zip(eqs, organized_ic):
+        if _nonfood_mass(net, x) < min_mass:
+            continue
+        eigs = spectral.jacobian_eigs(net, x, dilution, eps)
+        if eigs[0].real < 0:
+            stable_eqs.append(x)
+            stable_ic.append(k)
+    cl = heredity.cluster_attractors(net, stable_eqs, tol=0.05,
                                      min_mass=min_mass)
     # representative member x_eq per organized cluster
     centers_x = {}
-    kept = [e for e in eqs if _nonfood_mass(net, e) >= min_mass]
     for c in range(cl["n_attractors"]):
         idx = [i for i, l in enumerate(cl["labels"]) if l == c]
         if idx:
-            centers_x[c] = kept[idx[0]]
+            centers_x[c] = stable_eqs[idx[0]]
     return {
         "n_attractors": cl["n_attractors"],
         "n_certified": len(eqs),
+        "n_stable": len(stable_eqs),
         "n_kept": cl["n_kept"],
         "n_ics": len(ics),
         "ic_status": status,
-        "organized_ic": organized_ic,
+        "organized_ic": stable_ic,
         "cluster_labels": cl["labels"].tolist(),
         "members": cl["members"],
         "center_distances": heredity._pairwise(cl["centers"]),
