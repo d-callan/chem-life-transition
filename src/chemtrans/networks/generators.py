@@ -1,279 +1,233 @@
-"""Tunable chemical reaction network generators.
+"""Polymer network generator for the chemtrans 2.0 model.
 
-These are the "fiddle knobs". Every generator must return a ReactionNetwork
-AND record its full parameter set in the run metadata — results are
-sensitive to generator assumptions, so provenance is first-class.
+Baseline chemistry: monomer-addition polymerization driven by activated
+monomers (see plan §5.4). Species:
 
-Planned generators
-------------------
-random_crn
-    Erdos-Renyi-flavored: n_species, n_reactions sampled with random
-    reactant/product sets; each reaction gets a random catalyst with prob
-    p_cat. Simplest baseline.
-raf_biased
-    Generates networks with a tunable fraction of reactions arranged into
-    reflexively autocatalytic sets (Kauffman-style), to probe whether
-    seeded closure changes the transition structure.
-polymer_ligation
-    Species are strings over a small alphabet; reactions are
-    ligation (A + B -> AB) and cleavage (AB -> A + B), with optional
-    template catalysis. Gives a REAL assembly index for free and is the
-    most physically motivated model for the information-chemistry link.
+  letters  A, B, ...                (monomers, food)
+  A*, B*, ...                       (activated monomers = fuel, food)
+  W                                 (waste / leaving group, food)
+  strings of length >= 2            (polymers; only these may catalyze)
+
+Channels (all reversible, rates from species free energies g_i):
+
+  elongation     P + A* <=> PA + W   driven; dG = g_bond - dmu; may be
+                                     catalyzed (k_f/k_r multiplied by
+                                     (eps + kappa*x_C) — same factor both
+                                     directions, so K_eq is untouched).
+  thermal        PA <=> P + A        spontaneous condensation / hydrolysis;
+                                     dG = -g_bond; eps-scaled.
+  deactivation   A* <=> A + W        fuel decay; dG = -dmu; NOT eps-scaled.
+
+Detailed balance: dG_elong - dG_deact + dG_hyd = 0 identically, so rate
+ratios derived from g satisfy Wegscheider cycle consistency by
+construction. `eps` scales the UNcatalyzed rate of polymer-synthesis
+channels (elongation + thermal); at eps=0 the polymer-free state is
+absorbing (catalysts are non-food polymers only).
+
+Food inlet (concentrations, strictly mass-conserving across sweeps):
+  [A*]_inlet = chi * F_inlet / |Sigma|
+  [A]_inlet  = (1-chi) * F_inlet / |Sigma|
+  [W]_inlet = [P]_inlet = 0        (total letter influx = F_inlet always)
+
+Catalyst assignment (per elongation channel, latent-score design so that
+p_cat / p_selfrep / p_info sweeps nest rather than reshuffle):
+  u < p_cat            -> channel is catalyzed
+  v < p_selfrep        -> catalyst is the product PA itself
+  else w < p_info      -> catalyst shares sequence with PA (sub/superstring)
+  else                 -> random polymer of length >= min_cat_len
 """
+
+from __future__ import annotations
+
+import itertools
 
 import numpy as np
 
-from .core import Reaction, ReactionNetwork
+from .core import Channel, ReactionNetwork
+
+GENERATOR_VERSION = "polymer_v2"
 
 
-def random_crn(
-    n_species: int,
-    n_reactions: int,
-    p_cat: float,
-    n_food: int = 5,
-    max_reactants: int = 2,
-    max_products: int = 2,
-    p_cat_required: float = 0.5,
-    cat_boost: float = 20.0,
-    exclusive_catalysis: bool = False,
-    k_sat: float | None = None,
-    seed: int | None = None,
-) -> ReactionNetwork:
-    """Random CRN with tunable catalytic connectivity.
-
-    p_cat is the primary component of the control parameter lambda:
-    raising it raises the spectral radius of the catalysis matrix K.
-
-    p_cat_required: of the reactions that get a catalyst, this fraction is
-    catalyst-REQUIRED (rate=0, cannot fire spontaneously). The rest are
-    catalyst-accelerated. This knob interpolates between "catalysis is a
-    speedup" (0) and "catalysis is a precondition for new chemistry" (1) —
-    the latter is the physically interesting regime for RAF formation.
-
-    exclusive_catalysis: if True, species produced by catalyst-required
-    reactions are given NO spontaneous production route — spontaneous and
-    catalyst-accelerated reactions are resampled so their products avoid
-    those species entirely. This creates genuine nucleation barriers (the
-    RAF core cannot bootstrap from food alone) and makes dynamical
-    bistability possible; see runs/NOTEBOOK.md.
-
-    Food species are indices 0..n_food-1 and are supplied by the chemostat.
-    Rates are lognormal(sigma=0.5) around 1.0 so the network is
-    heterogeneous rather than a mean-field caricature.
-    """
-    rng = np.random.default_rng(seed)
-    species = [f"m{i}" for i in range(n_species)]
-    food = set(range(n_food))
-
-    reactions: list[Reaction] = []
-    seen: set[tuple] = set()
-    attempts = 0
-    while len(reactions) < n_reactions and attempts < n_reactions * 100:
-        attempts += 1
-        n_r = int(rng.integers(1, max_reactants + 1))
-        n_p = int(rng.integers(1, max_products + 1))
-        reactants = rng.choice(n_species, size=n_r, replace=False)
-        products = rng.choice(n_species, size=n_p, replace=False)
-        # disallow reactant->product overlap: A->A+B is a spontaneous
-        # replicator creating matter ex nihilo and diverging under mass
-        # action. Amplification belongs exclusively in the catalysis
-        # channel (that's the thing being studied).
-        if set(products.tolist()) & set(reactants.tolist()):
-            continue
-        key = (tuple(sorted(reactants.tolist())), tuple(sorted(products.tolist())))
-        if key in seen:
-            continue
-        seen.add(key)
-
-        base_rate = float(np.exp(rng.normal(0.0, 0.5)))
-        rxn = Reaction(
-            reactants={int(i): 1 for i in reactants},
-            products={int(i): 1 for i in products},
-            rate=base_rate,
-            cat_rate=base_rate * cat_boost,
-            k_sat=k_sat,
-        )
-        if rng.random() < p_cat:
-            cat = int(rng.integers(n_species))
-            if cat not in rxn.reactants:
-                rxn.catalysts = [cat]
-                if rng.random() < p_cat_required:
-                    rxn.rate = 0.0
-        reactions.append(rxn)
-
-    if exclusive_catalysis:
-        excl: set[int] = set()
-        for rxn in reactions:
-            if rxn.rate == 0.0 and rxn.catalysts:
-                excl.update(rxn.products)
-        excl -= food
-        allowed = [i for i in range(n_species) if i not in excl]
-        excl_list = sorted(excl)
-        kept = []
-        for rxn in reactions:
-            if rxn.rate > 0.0 and set(rxn.products) & excl:
-                if not allowed:
-                    continue  # no spontaneous-eligible product exists; drop
-                n_p = len(rxn.products)
-                rxn.products = {
-                    int(i): 1
-                    for i in rng.choice(
-                        allowed, size=n_p, replace=len(allowed) < n_p
-                    )
-                }
-            kept.append(rxn)
-        reactions = kept
-        # Nucleation barrier also requires the CATALYSTS of required
-        # reactions to be exclusive species — otherwise a spontaneous
-        # route to a catalyst ignites the whole core anyway
-        # (see runs/NOTEBOOK.md, M2/M3 findings).
-        if excl_list:
-            for rxn in reactions:
-                if rxn.rate == 0.0 and rxn.catalysts:
-                    rxn.catalysts = [
-                        int(rng.choice(excl_list)) for _ in rxn.catalysts
-                    ]
-
-    return ReactionNetwork(species=species, reactions=reactions, food=food)
+def _all_strings(alphabet: list[str], max_len: int) -> list[str]:
+    out: list[str] = []
+    for L in range(1, max_len + 1):
+        out.extend("".join(t) for t in itertools.product(alphabet, repeat=L))
+    return out
 
 
-def raf_biased(
-    n_species: int,
-    n_reactions: int,
-    closure_fraction: float,
-    seed: int | None = None,
-) -> ReactionNetwork:
-    """CRN biased toward containing reflexively autocatalytic (RAF) sets."""
-    raise NotImplementedError
-
-
-def polymer_ligation(
-    alphabet_size: int = 3,
-    max_length: int = 9,
-    n_ligations: int = 150,
+def polymer_network(
+    alphabet_size: int = 2,
+    max_len: int = 4,
+    *,
     p_cat: float = 0.3,
-    p_info: float = 0.7,
     p_selfrep: float = 0.3,
-    p_cat_required: float = 0.5,
-    cat_boost: float = 20.0,
-    cleavage_rate: float = 0.02,
-    ligation_rate: float = 0.05,
-    k_sat: float | None = None,
-    food_len: int = 1,
+    p_info: float = 0.7,
+    min_cat_len: int = 2,
+    delta_mu: float = 4.0,
+    chi: float = 1.0,
+    f_inlet: float = 1.0,
+    eps: float = 1.0,
+    kappa: float = 1.0,
+    g_bond: float = 1.0,
+    k_lig: float = 1.0,
+    k_hyd: float = 0.1,
+    k_deact: float = 0.1,
     seed: int | None = None,
 ) -> ReactionNetwork:
-    """Ligation/cleavage polymer chemistry with template catalysis.
+    """Build a conserved, reversible, energy-driven polymer network.
 
-    Species are strings over `alphabet_size` letters; structure[idx] holds
-    the string, enabling true assembly-index computation.
+    All species strings up to `max_len` over `alphabet_size` letters are in
+    the pool; every elongation of a shorter string is a channel, so the
+    pool is closed by construction (no silent truncation).
 
-    Reactions:
-      - ligation  a + b -> ab   (rate ligation_rate, possibly template-
-        catalyzed; rate=0 for the p_cat_required fraction)
-      - cleavage  ab -> a + b   (spontaneous hydrolysis, cleavage_rate)
-
-    Catalysis: each ligation gets a catalyst with prob p_cat. Of those,
-    fraction p_info are informational — the product itself with prob
-    p_selfrep (minimal self-template replicator; this is the only motif
-    that closes small RAF cores) or a species sharing the product's
-    sequence (super-/substring). The rest are random species. p_cat is
-    thus the connectivity knob, p_info the information-channel strength,
-    p_selfrep the replicator density — they decouple, which is what lets
-    H vary independently of Phi in the discrimination test.
-
-    Strings of length <= food_len are food (supplied by the chemostat);
-    food_len=1 gives monomers only, food_len=2 a "rich broth" of short
-    oligomers that makes small RAFs much more accessible.
+    Rates (dimensionless free energies in k_BT, standard concentration = 1):
+      g(monomer) = 0, g(A*) = delta_mu, g(W) = 0,
+      g(P) = g_bond * (len(P) - 1).
+      k_r is derived: k_r = k_f * exp(dG)  (k_f/k_r = exp(-dG) = K_eq).
     """
+    if alphabet_size < 1 or max_len < 2:
+        raise ValueError("need alphabet_size>=1 and max_len>=2")
+    if delta_mu < 0:
+        raise ValueError("delta_mu must be >= 0")
+    if not (0.0 <= chi <= 1.0):
+        raise ValueError("chi must be in [0,1]")
+
+    alphabet = [chr(65 + i) for i in range(alphabet_size)]
+    letters = list(alphabet)
+    act = [a + "*" for a in alphabet]
+    strings = [s for s in _all_strings(alphabet, max_len)]
+
+    species: list[str] = letters + act + ["W"] + strings[alphabet_size:]
+    index = {s: i for i, s in enumerate(species)}
+    n = len(species)
+
+    structure = {i: s for s, i in index.items()
+                 if "*" not in s and s != "W"}
+    # structure for activated monomer counts its letter for `comp`
+    comp = np.zeros((alphabet_size, n))
+    for i, s in enumerate(species):
+        if s == "W":
+            continue
+        base = s.replace("*", "")
+        for ch in base:
+            comp[alphabet.index(ch), i] += 1
+
+    g = np.zeros(n)
+    g[index["W"]] = 0.0
+    for a in alphabet:
+        g[index[a]] = 0.0
+        g[index[a + "*"]] = delta_mu
+    for s in strings[alphabet_size:]:
+        g[index[s]] = g_bond * (len(s) - 1)
+
+    food = {index[a] for a in alphabet} | {index[a + "*"] for a in alphabet}
+    food.add(index["W"])
+    food_inlet = np.zeros(n)
+    for a in alphabet:
+        food_inlet[index[a + "*"]] = chi * f_inlet / alphabet_size
+        food_inlet[index[a]] = (1.0 - chi) * f_inlet / alphabet_size
+
+    # deterministic per-channel latent scores: seed -> one rng; arrays drawn
+    # in a fixed order so p_cat/p_selfrep/p_info sweeps nest.
     rng = np.random.default_rng(seed)
-    letters = [chr(65 + i) for i in range(alphabet_size)]
-    species_set = list(letters)
-    index = {s: i for i, s in enumerate(species_set)}
-    structure: dict[int, str] = {i: s for s, i in index.items()}
+    n_elong = sum(
+        alphabet_size for L in range(1, max_len)
+        for _ in range(alphabet_size ** L)
+    )
+    u_cat = rng.random(n_elong)
+    u_self = rng.random(n_elong)
+    u_info = rng.random(n_elong)
+    u_kin = rng.random(n_elong)
 
-    def add_species(s: str) -> int:
-        if s not in index:
-            index[s] = len(species_set)
-            species_set.append(s)
-            structure[index[s]] = s
-        return index[s]
+    candidates = [
+        index[s]
+        for s in strings
+        if len(s) >= min_cat_len
+    ]
+    cand_strings = [s for s in strings if len(s) >= min_cat_len]
 
-    # pass 1: grow the species pool via random ligations. Pair sampling
-    # is biased toward shorter strings (~1/len): short oligomers are more
-    # abundant/mobile, and this is what makes monomer-level self-
-    # replicators (a+b -> ab cat ab with a,b in food) common enough to
-    # form RAF cores.
-    lig_pairs: list[tuple[str, str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    attempts = 0
-    while len(lig_pairs) < n_ligations and attempts < n_ligations * 200:
-        attempts += 1
-        w = 1.0 / np.array([len(s) for s in species_set])
-        a, b = rng.choice(species_set, size=2, p=w / w.sum())
-        prod = a + b
-        if len(prod) > max_length or (a, b) in seen:
-            continue
-        seen.add((a, b))
-        lig_pairs.append((a, b, prod))
-        add_species(prod)
+    channels: list[Channel] = []
+    e = 0
+    for L in range(1, max_len):
+        for P in itertools.product(alphabet, repeat=L):
+            P = "".join(P)
+            iP = index[P]
+            for A in alphabet:
+                PA = P + A
+                iPA, iA, iW = index[PA], index[A + "*"], index["W"]
+                # --- driven elongation P + A* <=> PA + W -----------------
+                dG = g[iPA] + g[iW] - g[iP] - g[iA]  # = g_bond - delta_mu
+                k_f = k_lig
+                k_r = k_lig * np.exp(dG)
+                cats: tuple[int, ...] = ()
+                if u_cat[e] < p_cat and candidates:
+                    if u_self[e] < p_selfrep:
+                        cats = (iPA,)
+                    elif u_info[e] < p_info:
+                        kin = [
+                            index[s] for s in cand_strings
+                            if s != PA and (PA in s or s in PA)
+                        ]
+                        if kin:
+                            cats = (kin[int(u_kin[e] * len(kin))],)
+                        else:
+                            cats = (
+                                candidates[int(u_kin[e] * len(candidates))],
+                            )
+                    else:
+                        cats = (candidates[int(u_kin[e] * len(candidates))],)
+                channels.append(Channel(
+                    reactants=tuple(sorted(((iP, 1), (iA, 1)))),
+                    products=tuple(sorted(((iPA, 1), (iW, 1)))),
+                    catalysts=cats,
+                    k_f=k_f, k_r=k_r,
+                    synth=True, mechanism="elongation",
+                ))
+                e += 1
 
-    # pass 2: close the pool under cleavage — every substring of a
-    # sampled product is itself a species (hydrolysis produces it).
-    for s in list(species_set):
-        for k in range(1, len(s)):
-            for st in range(len(s) - k + 1):
-                add_species(s[st:st + k])
+                # --- thermal condensation / hydrolysis PA <=> P + A -----
+                # P may equal A (e.g. AA <=> A + A): merge stoichiometry.
+                prods: dict[int, int] = {}
+                for i in (iP, index[A]):
+                    prods[i] = prods.get(i, 0) + 1
+                dG3 = sum(v * g[i] for i, v in prods.items()) - g[iPA]
+                channels.append(Channel(
+                    reactants=((iPA, 1),),
+                    products=tuple(sorted(prods.items())),
+                    catalysts=(),
+                    k_f=k_hyd, k_r=k_hyd * np.exp(dG3),
+                    synth=True, mechanism="thermal",
+                ))
 
-    # pass 3: for every product string, EVERY split a+b is a ligation
-    # route (and its reverse a cleavage). Catalysis is per product:
-    # template matching is a property of what is being assembled, so all
-    # routes to a self-templated product share the self-rep catalyst.
-    reactions: list[Reaction] = []
-    for prod in species_set:
-        if len(prod) < 2:
-            continue
-        routes = [(prod[:k], prod[k:]) for k in range(1, len(prod))]
-        # catalyst identity for this product (shared by all its routes)
-        catalyst: int | None = None
-        if rng.random() < p_cat:
-            if rng.random() < p_info:
-                # informational: self-template (cat == prod, the minimal
-                # replicator RAF) with prob p_selfrep, else a species
-                # sharing the product's sequence (super-/substring)
-                if rng.random() < p_selfrep:
-                    catalyst = index[prod]
-                else:
-                    kin = [s for s in species_set
-                           if s != prod and (prod in s or s in prod)]
-                    catalyst = index[kin[int(rng.integers(len(kin)))]] \
-                        if kin else index[prod]
-            else:
-                catalyst = index[
-                    species_set[int(rng.integers(len(species_set)))]]
-        required = catalyst is not None and rng.random() < p_cat_required
-        for a, b in routes:
-            base = ligation_rate * float(np.exp(rng.normal(0.0, 0.5)))
-            reactants = {index[a]: 1 + (a == b)}
-            lig = Reaction(
-                reactants=reactants,
-                products={index[prod]: 1},
-                rate=0.0 if required else base,
-                cat_rate=base * cat_boost,
-                k_sat=k_sat,
-            )
-            if catalyst is not None and catalyst not in lig.reactants:
-                lig.catalysts = [catalyst]
-            reactions.append(lig)
-            reactions.append(Reaction(
-                reactants={index[prod]: 1},
-                products={index[a]: 1 + (a == b)},
-                rate=cleavage_rate * float(np.exp(rng.normal(0.0, 0.5))),
-                k_sat=k_sat,
-            ))
+    for a in alphabet:
+        iA_, iA0, iW = index[a + "*"], index[a], index["W"]
+        dG2 = g[iA0] + g[iW] - g[iA_]  # = -delta_mu
+        channels.append(Channel(
+            reactants=((iA_, 1),),
+            products=tuple(sorted(((iA0, 1), (iW, 1)))),
+            catalysts=(),
+            k_f=k_deact, k_r=k_deact * np.exp(dG2),
+            synth=False, mechanism="deactivation",
+        ))
 
     return ReactionNetwork(
-        species=species_set,
-        reactions=reactions,
-        food={i for i, s in structure.items() if len(s) <= food_len},
+        species,
+        channels,
+        food,
         structure=structure,
+        comp=comp,
+        g=g,
+        food_inlet=food_inlet,
+        kappa=kappa,
+        eps=eps,
+        params=dict(
+            generator=GENERATOR_VERSION,
+            alphabet_size=alphabet_size, max_len=max_len,
+            p_cat=p_cat, p_selfrep=p_selfrep, p_info=p_info,
+            min_cat_len=min_cat_len,
+            delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
+            kappa=kappa, g_bond=g_bond,
+            k_lig=k_lig, k_hyd=k_hyd, k_deact=k_deact,
+            seed=seed,
+        ),
     )

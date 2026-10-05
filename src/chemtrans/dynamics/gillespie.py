@@ -1,95 +1,237 @@
-"""Stochastic simulation (Gillespie SSA) for small networks.
+"""Exact stochastic simulation (Gillespie SSA) for chemtrans 2.0.
 
-Deterministic ODEs can't capture extinction: an autocatalytic core at
-concentration 1e-9 is "alive" in the ODE but dead in reality. SSA is needed
-to measure genuine persistence vs. numerical persistence, and to see
-demographic noise near the transition.
+Processes (expanded from channels, single source of truth):
 
-Intended for SMALL networks (hundreds of reactions): each event rescores
-all propensities, so cost is O(n_reactions) per firing — fine for
-random_crn toy nets, impractical for polymer_ligation (~6000 rxns and
-thousands of events/second). For big nets use tau-leaping (not yet
-implemented).
+  per channel r with participant multiset alpha (fwd) / beta (rev):
+    background fwd:  k = k_f * (eps if synth else 1),  participants alpha
+    background rev:  k = k_r * (eps if synth else 1),  participants beta
+    catalyzed fwd by c in catalysts: k = k_f * kappa,  participants alpha+[c]
+    catalyzed rev by c:              k = k_r * kappa,  participants beta+[c]
+
+  Hazard convention (matches ODE k * prod x^{a}):
+      h(n; V) = k * V^{1-|a|} * prod_i (n_i)_{a_i}
+      with (n)_q the falling factorial. A hazard is exactly 0 whenever
+      n_i < a_i for any participant i (impossible events cannot fire).
+
+  Boundary processes (CSTR):
+      feed on food species i: h = D * food_inlet_i * V   (delta +1)
+      dilution on species i:  h = D * n_i                (delta -1)
+
+Recording is non-anticipatory: record times strictly before an event's
+time are filled with the PRE-event state; the post-event state applies
+from the event time onward. Censoring (max_events) is reported as
+`truncated` with the actual censor time — never padded to the horizon.
+
+Observers: callables `obs(t, n, kind, proc_idx)` invoked AFTER each event
+(and once at t=0). kind in {"init", "channel", "feed", "dilution"}; use
+for online first-passage/dwell statistics without storing full paths.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from ..networks.core import ReactionNetwork
 
 
+@dataclass(frozen=True)
+class Process:
+    """One elementary stochastic process."""
+    rate: float                    # stochastic rate constant k
+    participants: tuple[int, ...]  # flat species list (with repetition)
+    offsets: tuple[int, ...]       # per-position count of same species earlier
+    delta: tuple[tuple[int, int], ...]  # (species, dcount) net stoich
+    kind: str                      # "channel" | "feed" | "dilution"
+    channel: int                   # source channel index or -1
+
+
+def _mk_offsets(parts: list[int]) -> tuple[int, ...]:
+    seen: dict[int, int] = {}
+    out = []
+    for s in parts:
+        out.append(seen.get(s, 0))
+        seen[s] = seen.get(s, 0) + 1
+    return tuple(out)
+
+
+def build_processes(net: ReactionNetwork, dilution: float,
+                    eps: float | None = None) -> list[Process]:
+    """Expand channels + boundary processes for the SSA."""
+    if eps is None:
+        eps = net.eps
+    procs: list[Process] = []
+    nu_cache = {}
+    for r, ch in enumerate(net.channels):
+        nu = ch.nu
+        fwd_delta = tuple(sorted(nu.items()))
+        rev_delta = tuple(sorted((i, -a) for i, a in nu.items()))
+        bg = eps if ch.synth else 1.0
+        for direction, parts, delta, k in (
+                ("fwd", ch.factors("fwd"), fwd_delta, ch.k_f * bg),
+                ("rev", ch.factors("rev"), rev_delta, ch.k_r * bg)):
+            if k > 0:
+                procs.append(Process(
+                    rate=k, participants=parts, offsets=_mk_offsets(list(parts)),
+                    delta=delta, kind="channel", channel=r))
+        for c in ch.catalysts:
+            for direction, parts, delta, k in (
+                    ("fwd", ch.factors("fwd") + (c,), fwd_delta,
+                     ch.k_f * net.kappa),
+                    ("rev", ch.factors("rev") + (c,), rev_delta,
+                     ch.k_r * net.kappa)):
+                if k > 0:
+                    procs.append(Process(
+                        rate=k, participants=parts,
+                        offsets=_mk_offsets(list(parts)), delta=delta,
+                        kind="channel", channel=r))
+    if dilution > 0:
+        for i in sorted(net.food):
+            if net.food_inlet[i] > 0:
+                procs.append(Process(
+                    rate=dilution * net.food_inlet[i], participants=(),
+                    offsets=(), delta=((i, 1),), kind="feed", channel=-1))
+        for i in range(net.n_species):
+            procs.append(Process(
+                rate=dilution, participants=(i,), offsets=(0,),
+                delta=((i, -1),), kind="dilution", channel=-1))
+    return procs
+
+
+def hazard(p: Process, n: np.ndarray, volume: float) -> float:
+    """h = k * V^{1-m} * prod_p (n_{i_p} - offset_p); zero if infeasible."""
+    h = p.rate
+    m = len(p.participants)
+    for pos, s in enumerate(p.participants):
+        f = n[s] - p.offsets[pos]
+        if f <= 0:
+            return 0.0
+        h *= f
+    if m > 0:
+        h *= volume ** (1 - m)
+    else:
+        h *= volume  # zeroth-order influx: conc/time * V
+    return h
+
+
+def counts_from_concentration(
+    x: np.ndarray, volume: float, policy: str = "round",
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Explicit concentration -> integer count policy (recorded in runs)."""
+    x = np.asarray(x, dtype=float)
+    if policy == "round":
+        return np.maximum(np.rint(x * volume), 0).astype(np.int64)
+    if policy == "poisson":
+        if rng is None:
+            raise ValueError("poisson init requires rng")
+        return rng.poisson(np.maximum(x, 0.0) * volume).astype(np.int64)
+    raise ValueError(f"unknown init policy {policy!r}")
+
+
+@dataclass
+class SSAResult:
+    t: np.ndarray                  # record times (non-anticipatory)
+    n: np.ndarray                  # counts at record times
+    events: int
+    completed: bool                # reached t_max with time remaining
+    truncated: bool                # hit max_events
+    censor_time: float             # actual last simulated time
+    final_counts: np.ndarray
+    net_hash: str
+    seed_key: str
+    diagnostics: dict = field(default_factory=dict)
+
+
 def simulate(
     net: ReactionNetwork,
     t_max: float,
-    feed_rate: float = 1.0,
-    dilution_rate: float = 0.1,
+    dilution: float = 0.1,
     volume: float = 100.0,
-    x0: np.ndarray | None = None,
+    n0: np.ndarray | None = None,
+    eps: float | None = None,
     seed: int | None = None,
     max_events: int = 5_000_000,
     record_dt: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Run SSA with food influx and dilution as Poisson/death processes.
-
-    Concentrations are counts / volume; reaction propensity a_r evaluated
-    by net.propensity at x = n/V then multiplied by V (event/time).
-    Food influx: feed_rate*V molecules/time per food species.
-    Dilution: each molecule leaves at dilution_rate (death process).
-
-    Returns (t, X): t are record times, X molecule counts per species.
-    If the trajectory hits max_events the tail is truncated — treat
-    long organized trajectories as 'running until cap'.
-    """
+    observers: tuple = (),
+) -> SSAResult:
+    """Run the exact SSA. See module docstring for conventions."""
     rng = np.random.default_rng(seed)
+    if eps is None:
+        eps = net.eps
+    procs = build_processes(net, dilution, eps)
     n_species = net.n_species
-    food_idx = np.array(sorted(net.food), dtype=int)
-    influx_rate = feed_rate * volume
 
-    if x0 is None:
-        n = np.zeros(n_species)
-        n[food_idx] = round(feed_rate * volume / max(dilution_rate, 1e-12))
+    if n0 is None:
+        n = np.zeros(n_species, dtype=np.int64)
+        for i in net.food:
+            n[i] = int(round(net.food_inlet[i] * volume))
     else:
-        n = np.floor(np.asarray(x0, dtype=float)).copy()
-    n = np.maximum(n, 0.0)
+        n = np.asarray(n0, dtype=np.int64).copy()
+        if (n < 0).any() or n.shape != (n_species,):
+            raise ValueError("n0 must be nonnegative integer counts")
 
     if record_dt is None:
         record_dt = t_max / 2000.0
+    n_records = int(np.floor(t_max / record_dt)) + 1
+    rec_times = np.arange(n_records) * record_dt
+    X = np.empty((n_records, n_species), dtype=np.int64)
+    filled = 0
 
-    ts, xs = [0.0], [n.copy()]
+    def fill_upto(t_event: float, state: np.ndarray):
+        """Fill record times strictly < t_event with the pre-event state."""
+        nonlocal filled
+        while filled < n_records and rec_times[filled] < t_event:
+            X[filled] = state
+            filled += 1
+
     t = 0.0
-    t_next_record = record_dt
+    for obs in observers:
+        obs(0.0, n, "init", -1)
+    fill_upto(0.0 + np.finfo(float).eps, n)  # t=0 record
+
     events = 0
-    while t < t_max and events < max_events:
-        x = n / volume
-        a = net.propensity(x) * volume
-        # process list: [reactions | food influx | dilution per species]
-        death = dilution_rate * n
-        a_in = influx_rate * np.ones(len(food_idx))
-        total = a.sum() + a_in.sum() + death.sum()
+    truncated = False
+    while t < t_max:
+        h = np.array([hazard(p, n, volume) for p in procs])
+        total = h.sum()
         if total <= 0.0:
-            break  # nothing can happen (empty reactor, no feed)
-        t += float(rng.exponential(1.0 / total))
-        if t > t_max:
+            break  # absorbing state: nothing can fire
+        dt = rng.exponential(1.0 / total)
+        if t + dt > t_max:
+            t = t_max
             break
-        u = float(rng.random()) * total
-        a_tot = a.sum()
-        if u < a_tot:
-            r = int(np.searchsorted(np.cumsum(a), u, side="right"))
-            rxn = net.reactions[r]
-            for i, nu in rxn.reactants.items():
-                n[i] -= nu
-            for i, nu in rxn.products.items():
-                n[i] += nu
-        elif u < a_tot + a_in.sum():
-            j = int((u - a_tot) // max(influx_rate, 1e-12))
-            n[food_idx[min(j, len(food_idx) - 1)]] += 1.0
-        else:
-            i = int(np.searchsorted(np.cumsum(death),
-                                    u - a_tot - a_in.sum(), side="right"))
-            n[min(i, n_species - 1)] -= 1.0
-        np.maximum(n, 0.0, out=n)
+        # fill record times < event time with PRE-event state
+        fill_upto(t + dt, n)
+        t += dt
+        u = rng.random() * total
+        idx = int(np.searchsorted(np.cumsum(h), u, side="right"))
+        idx = min(idx, len(procs) - 1)
+        p = procs[idx]
+        for i, dcount in p.delta:
+            n[i] += dcount
+        if (n < 0).any():
+            raise RuntimeError(
+                f"impossible event produced negative counts "
+                f"(process kind={p.kind} channel={p.channel})")
         events += 1
-        while t >= t_next_record and t_next_record <= t_max:
-            ts.append(t_next_record)
-            xs.append(n.copy())
-            t_next_record += record_dt
-    return np.asarray(ts), np.asarray(xs)
+        for obs in observers:
+            obs(t, n, p.kind, idx)
+        if events >= max_events:
+            truncated = True
+            break
+
+    # fill remaining records through horizon with final constant state
+    while filled < n_records:
+        X[filled] = n
+        filled += 1
+
+    return SSAResult(
+        t=rec_times, n=X, events=events,
+        completed=not truncated, truncated=truncated,
+        censor_time=t, final_counts=n.copy(),
+        net_hash=net.hash, seed_key=str(seed),
+        diagnostics={"dilution": dilution, "volume": volume, "eps": eps,
+                     "max_events": max_events, "record_dt": record_dt},
+    )

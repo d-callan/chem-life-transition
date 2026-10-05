@@ -1,99 +1,73 @@
-"""Spectral properties of the catalysis matrix K.
+"""Jacobian spectral diagnostics at certified fixed points.
 
-rho(K) (spectral radius) is the static threshold candidate:
-  rho(K) < 1 -> catalytic perturbations die out (subcritical)
-  rho(K) > 1 -> self-sustaining amplification possible (supercritical)
-
-Comparing rho(K)=1 against the *dynamically observed* critical point
-lambda_c is itself a useful test of how well linear theory predicts the
-nonlinear transition.
+For CSTR, the linearization is  J = S dv/dx - D*I  (net.jacobian).
+The leading nonzero eigenvalue's real part measures local relaxation
+rate; critical slowing down appears as Re(lambda_max) -> 0 near a
+bifurcation. Serial-dilution stability is instead Floquet (multipliers
+of the cycle map) — see ode.sd_fixed_point_multipliers.
 """
+
+from __future__ import annotations
 
 import numpy as np
 
 from ..networks.core import ReactionNetwork
 
 
-def _eigvals_sorted(net: ReactionNetwork) -> np.ndarray:
-    K = net.catalysis_matrix()
-    if K.size == 0:
-        return np.array([0.0])
-    ev = np.abs(np.linalg.eigvals(K))
-    return np.sort(ev)[::-1]
+def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
+                  eps: float | None = None) -> np.ndarray:
+    """Eigenvalues of the CSTR Jacobian at x, sorted by real part desc."""
+    J = net.jacobian(np.maximum(np.asarray(x, float), 0.0), dilution, eps)
+    w = np.linalg.eigvals(J)
+    return w[np.argsort(-w.real)]
 
 
-def spectral_radius(net: ReactionNetwork) -> float:
-    """Largest-magnitude eigenvalue of the catalysis matrix K."""
-    return float(_eigvals_sorted(net)[0])
+def leading_rate(net: ReactionNetwork, x: np.ndarray, dilution: float,
+                 eps: float | None = None) -> float:
+    """Re(lambda) of the leading eigenvalue (<0 for stable, ->0 critical)."""
+    return float(jacobian_eigs(net, x, dilution, eps)[0].real)
 
 
-def spectral_gap(net: ReactionNetwork) -> float:
-    """Gap between leading and next eigenvalue — sharpens near transitions."""
-    ev = _eigvals_sorted(net)
-    return float(ev[0] - ev[1]) if len(ev) > 1 else 0.0
+def relaxation_rate_series(records: list[dict], lam_key: str = "lambda",
+                           x_key: str = "x_eq") -> np.ndarray:
+    """Leading relaxation rate vs control parameter, from run records.
 
-
-def jacobian_spectral_abscissa(
-    net: ReactionNetwork,
-    x: np.ndarray,
-    feed_rate: float,
-    dilution_rate: float,
-    h: float = 1e-5,
-    alive_threshold: float = 1e-6,
-) -> float:
-    """Dominant eigenvalue alpha of the RESIDENT chemostat Jacobian at x.
-
-    The Jacobian is restricted to species with x > alive_threshold.
-    This matters: the positivity clamp (x >= 0) makes naive finite
-    differences at extinct species produce spurious unstable directions
-    — a state can be a stable fixed point on its support while the full
-    Jacobian reports alpha > 0. alpha < 0: locally stable attractor;
-    alpha -> 0 approaching a bifurcation (critical slowing down).
+    Each record needs net (or net handle resolved by caller), lambda value,
+    and a certified x_eq. Returns array of (lam, re_lam1, n_neg_eigs).
     """
-    from scipy import sparse
-
-    S = sparse.csr_matrix(net.stoichiometry())
-    feed = np.zeros(net.n_species)
-    feed[list(net.food)] = feed_rate
-    x = np.maximum(np.asarray(x, dtype=float), 0.0)
-    alive = np.where(x > alive_threshold)[0]
-    if len(alive) == 0:
-        return 0.0
-
-    def f(z):
-        z = np.maximum(z, 0.0)
-        return S @ net.propensity(z) + feed - dilution_rate * z
-
-    J = np.empty((len(alive), len(alive)))
-    for k, j in enumerate(alive):
-        e = np.zeros(net.n_species)
-        e[j] = h * max(1.0, x[j])
-        J[:, k] = (f(x + e) - f(x - e))[alive] / (2.0 * e[j])
-    return float(np.linalg.eigvals(J).real.max())
+    out = []
+    for rec in records:
+        net = rec["net"]
+        x = np.asarray(rec[x_key], float)
+        w = jacobian_eigs(net, x, rec["dilution"], rec.get("eps"))
+        out.append((float(rec[lam_key]), float(w[0].real),
+                    int(np.sum(w.real > -1e-9))))
+    return np.array(out)
 
 
-def invasion_pressure(
-    net: ReactionNetwork,
-    x: np.ndarray,
-    feed_rate: float,
-    dilution_rate: float,
-    alive_threshold: float = 1e-6,
-) -> float:
-    """Max net growth rate among extinct species at state x.
+def fit_slowing_down(lam: np.ndarray, re1: np.ndarray,
+                     lam_c: float) -> dict:
+    """Fit |Re lam1| ~ A * |lam - lam_c|^nu on the stable branch.
 
-    > 0 means the current community could be invaded by an absent species
-    IF it could nucleate; combined with a catalyst-required barrier this
-    is the signature of bistability (organized attractor coexists with a
-    dead attractor). <= 0: the community is invasion-proof.
+    Mean-field expectation nu = 1. Returns params + fit diagnostics;
+    caller decides whether the window is justified.
     """
-    from scipy import sparse
-
-    S = sparse.csr_matrix(net.stoichiometry())
-    feed = np.zeros(net.n_species)
-    feed[list(net.food)] = feed_rate
-    x = np.maximum(np.asarray(x, dtype=float), 0.0)
-    dead = np.where(x <= alive_threshold)[0]
-    if len(dead) == 0:
-        return 0.0
-    drift = S @ net.propensity(x) + feed - dilution_rate * x
-    return float(drift[dead].max())
+    lam = np.asarray(lam, float)
+    re1 = np.asarray(re1, float)
+    mask = (lam > lam_c) & (re1 < 0)
+    if mask.sum() < 3:
+        return {"status": "insufficient_stable_points", "n": int(mask.sum())}
+    x = np.log(np.abs(lam[mask] - lam_c))
+    y = np.log(np.abs(re1[mask]))
+    A = np.polyfit(x, y, 1)
+    pred = np.polyval(A, x)
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    return {
+        "status": "ok",
+        "nu": float(A[0]),
+        "log_A": float(A[1]),
+        "r2": 1.0 - ss_res / max(ss_tot, 1e-300),
+        "n": int(mask.sum()),
+        "theory_nu_meanfield": 1.0,
+    }

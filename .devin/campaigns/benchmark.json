@@ -1,0 +1,16 @@
+{
+  "name": "benchmark",
+  "experiment": "gateA_transcritical_fixture",
+  "task": {
+    "generator": {"kind": "transcritical", "kappa": 1.0,
+                  "eps": 0.001, "f_inlet": 1.0},
+    "reactor": {"type": "cstr", "dilution": 0.5, "t_max": 300.0}
+  },
+  "sweeps": [
+    {"param": "generator.kappa",
+     "values": [0.1, 0.3, 0.45, 0.6, 0.8, 1.1, 1.5]}
+  ],
+  "order_parameter": "x_eq:2",
+  "n_networks": 1,
+  "out_dir": "data/validation"
+}

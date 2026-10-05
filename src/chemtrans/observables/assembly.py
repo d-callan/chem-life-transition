@@ -1,105 +1,156 @@
-"""Assembly-index observables C(lambda).
+"""Assembly-complexity observables for polymer strings.
 
-Two variants:
+Molecular assembly index (string version): the minimum number of join
+steps in a concat-DAG producing the string, where each distinct
+previously-built block may be reused at no additional cost.
 
-- path_assembly: cheap proxy — shortest joining-path depth from food
-  species to each molecule in THIS network (1 + max over reactants).
-  Well-defined for any ReactionNetwork. Catalysts are ignored (they are
-  not consumed), so an autocatalytic loop does not inflate its own index.
-- true assembly index (assembly theory): minimum joining steps over
-  molecular substructure. Only defined for generators that attach real
-  structure (e.g. polymer_ligation strings). TODO milestone 4.
+    a(s) = min over binary parse DAGs of |internal nodes|
 
-The key observable is the DISTRIBUTION P(A), not the mean: the
-conversation predicts the high-assembly tail gets populated and becomes
-persistent only above the transition.
+Formally computed as a shortest path over "needed block" sets:
+
+    f(N) = 0                                          if N empty
+         = 1 + min_{w in N, splits u+v=w} f(N \\ {w} u {u,v} \\ leaves)
+
+where N is the set of distinct blocks still to be built (leaves are the
+monomers, free). Shared substrings are counted once — this is the reuse
+credit that distinguishes assembly index from length-1. Exact for short
+strings via memoized search; for len > `exact_limit` an explicit upper
+bound (len-1) is returned with `estimator="bound"` so downstream code
+can never silently treat a bound as a measurement.
+
+Signature criterion (per plan): a species only counts toward the
+assembly-complexity signature if it is BOTH high-assembly (a > null
+quantile for its length) AND high-abundance (mass fraction above the
+calibrated abundance floor). Either condition alone is diagnostic only.
 """
+
+from __future__ import annotations
+
+from functools import lru_cache
 
 import numpy as np
 
-from ..networks.core import ReactionNetwork
+_ALPHABET_SIZE = 2  # default; overridden per network where available
 
 
-def path_assembly_index(net: ReactionNetwork) -> np.ndarray:
-    """Shortest-path assembly index for every species (inf if unreachable).
-
-    A(food) = 0; A(p) = min over producing reactions of
-    1 + max(A(reactants)). Relaxation to fixed point — converges because
-    estimates only decrease and are bounded below.
-    """
-    A = np.full(net.n_species, np.inf)
-    A[list(net.food)] = 0.0
-    for _ in range(10 * net.n_species):
-        changed = False
-        for rxn in net.reactions:
-            src = [A[i] for i in rxn.reactants]
-            if not np.all(np.isfinite(src)):
-                continue
-            cand = 1.0 + max(src)
-            for p in rxn.products:
-                if cand < A[p]:
-                    A[p] = cand
-                    changed = True
-        if not changed:
-            break
-    return A
+def _leaf_strings(alphabet_size: int) -> set[str]:
+    return {format(i, f"0{1}b")[-1] for i in range(alphabet_size)}
 
 
-def _string_assembly(s: str, memo: dict) -> int:
-    """Assembly index of a string (Marshall/Cronin-style).
-
-    a(s) = min over bipartitions s=u+v of
-        a(u) + 1            if u == v   (build once, join to itself)
-        a(u) + a(v) + 1     otherwise
-    with a(single letter) = 0. Previously built strings stay available,
-    so repeats are cheap — that's the whole point of the measure.
-    """
+def assembly_index(s: str, exact_limit: int = 12,
+                   node_budget: int = 200_000) -> tuple[int, str]:
+    """Return (index, estimator) where estimator is 'exact' or 'bound'."""
     if len(s) <= 1:
-        return 0
-    if s in memo:
-        return memo[s]
-    best = len(s) - 1  # monomer-by-monomer upper bound
-    for cut in range(1, len(s)):
-        u, v = s[:cut], s[cut:]
-        cost = _string_assembly(u, memo) + 1 if u == v else \
-            _string_assembly(u, memo) + _string_assembly(v, memo) + 1
-        best = min(best, cost)
-    memo[s] = best
-    return best
+        return 0, "exact"
+    if len(s) > exact_limit:
+        return len(s) - 1, "bound"
+
+    chars = set(s)
+    budget = [node_budget]
+
+    @lru_cache(maxsize=None)
+    def f(needed: frozenset) -> int:
+        if budget[0] <= 0:
+            raise _BudgetExceeded
+        budget[0] -= 1
+        if not needed:
+            return 0
+        best = None
+        for w in needed:
+            for k in range(1, len(w)):
+                u, v = w[:k], w[k:]
+                nxt = (needed - {w})
+                if len(u) > 1:
+                    nxt = nxt | {u}
+                if len(v) > 1:
+                    nxt = nxt | {v}
+                cost = 1 + f(frozenset(nxt))
+                if best is None or cost < best:
+                    best = cost
+                    if best == 1:      # can't beat 1 + 0
+                        break
+        return best
+
+    try:
+        return f(frozenset({s})), "exact"
+    except _BudgetExceeded:
+        return len(s) - 1, "bound"
+    finally:
+        f.cache_clear()
 
 
-def molecular_assembly_index(net: ReactionNetwork) -> np.ndarray:
-    """True assembly index from species structure (requires structure field)."""
-    if not net.structure:
-        raise ValueError("no species structure — use path_assembly_index "
-                         "or a structured generator (polymer_ligation)")
-    memo: dict = {}
-    A = np.full(net.n_species, np.inf)
-    for i in range(net.n_species):
-        s = net.structure.get(i)
-        if s is not None:
-            A[i] = _string_assembly(s, memo)
-    return A
+class _BudgetExceeded(Exception):
+    pass
 
 
-def assembly_distribution(
-    net: ReactionNetwork, abundance: np.ndarray, true_index: bool = False
-) -> tuple[np.ndarray, np.ndarray]:
-    """Abundance-weighted P(A) over producible species.
+def species_assembly(net, species_index: int,
+                     **kw) -> tuple[int, str]:
+    """Assembly index of species i's string label."""
+    return assembly_index(net.labels[species_index], **kw)
 
-    Returns (bin_edges, probabilities). Species unreachable from food
-    (A=inf) are excluded — they can't be made anyway.
+
+def null_ma_distribution(rng: np.random.Generator, length: int,
+                         alphabet_size: int = 2,
+                         n_samples: int = 500,
+                         **kw) -> np.ndarray:
+    """Null MA distribution for random strings of the given length.
+
+    The null is "random string of same length over same alphabet" — the
+    threshold is therefore length-conditional, not a fixed cutoff.
     """
-    A = (molecular_assembly_index(net) if true_index
-         else path_assembly_index(net))
-    abundance = np.asarray(abundance, dtype=float)
-    mask = np.isfinite(A)
-    if not np.any(mask):
-        return np.array([0.0, 1.0]), np.array([1.0])
-    A_f, w = A[mask], abundance[mask]
-    if w.sum() <= 0:
-        w = np.ones_like(w)
-    lo, hi = int(A_f.min()), int(A_f.max())
-    bins = np.arange(lo, hi + 2) - 0.5
-    hist, edges = np.histogram(A_f, bins=bins, weights=w, density=True)
-    return edges, hist
+    out = np.empty(n_samples)
+    for i in range(n_samples):
+        s = "".join(rng.choice(list("01"[:alphabet_size]),
+                               size=length))
+        out[i], _ = assembly_index(s, **kw)
+    return out
+
+
+def ma_threshold(null_samples: np.ndarray, q: float = 0.95) -> float:
+    """Null-calibrated assembly threshold: q-quantile of the null."""
+    return float(np.quantile(null_samples, q))
+
+
+def assembly_signature(
+    net,
+    x: np.ndarray,
+    ma_thresholds: dict[int, float],
+    abundance_floor: float,
+    exact_limit: int = 12,
+) -> dict:
+    """Joint assembly+abundance signature over non-food species.
+
+    ma_thresholds: {length: null-calibrated threshold}
+    abundance_floor: minimum monomer-mass fraction of total non-food
+        mass for "high abundance" (calibrated against shuffled/
+        unstructured nulls upstream).
+
+    Returns per-species records plus the signature summary:
+      n_signature, mass_signature (fraction of non-food mass that is
+      jointly high-MA and high-abundance).
+    """
+    comp_mass = net.comp.sum(axis=0)
+    nonfood = ~net.is_food
+    total = float(comp_mass[nonfood] @ x[nonfood])
+    records = []
+    n_sig = 0
+    mass_sig = 0.0
+    for i in range(net.n_species):
+        if not nonfood[i]:
+            continue
+        lab = net.labels[i]
+        a, est = assembly_index(lab, exact_limit=exact_limit)
+        frac = float(comp_mass[i] * x[i] / total) if total > 0 else 0.0
+        thr = ma_thresholds.get(len(lab))
+        high_ma = est == "exact" and thr is not None and a > thr
+        high_ab = frac >= abundance_floor
+        sig = bool(high_ma and high_ab)
+        n_sig += sig
+        mass_sig += frac * sig
+        records.append({
+            "species": i, "label": lab, "assembly": a, "estimator": est,
+            "mass_fraction": frac, "high_assembly": high_ma,
+            "high_abundance": high_ab, "signature": sig,
+        })
+    return {"species": records, "n_signature": n_sig,
+            "mass_signature": mass_sig}

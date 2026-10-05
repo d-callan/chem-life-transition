@@ -1,114 +1,160 @@
-"""Organizational closure Phi — the primary candidate order parameter.
+"""Formal food-generated RAF (maxRAF) — Hordijk-Steel fixed point.
 
-Phi = (chemical flux inside self-maintaining organization) / (total flux)
+Definition (per the standard RAF algorithm):
 
-Two pieces:
-1. Structural: find the self-sustaining core of the network — the RAF set.
-   We use the strict definition: a set of catalyzed reactions where every
-   reaction's reactants are food-or-produced-within-the-set AND every
-   reaction's catalyst is produced within the set (not externally
-   supplied — an imported catalyst isn't self-maintaining).
-   Computed by iterative pruning to a fixed point.
-2. Dynamical: at steady state, what fraction of total reaction flux runs
-   through that core?
+  R' <- set of catalyzed channels (channels with >= 1 catalyst assigned)
+  repeat:
+      cl <- closure of food F under R', ignoring catalysts
+            (grow: a reaction fires if all reactants are in cl)
+      R' <- { r in R' : reactants(r) subset cl
+                        AND catalysts(r) intersect cl != {} }
+  until fixpoint; the unique maximal RAF is the result (empty allowed).
 
-Also the autocatalytic-activity observable A(lambda) for the
-transition-discrimination experiment.
+Catalysts are alternatives: ANY one catalyst in the closure suffices.
+Food species are inside the closure by construction, so a food-catalyzed
+reaction is always eligible (the baseline generator never creates them).
+
+This module also reports a *separate* kinetic-accessibility closure
+(which channels could run at the given eps and catalyst availability) and
+an explicitly-named internally-catalyzed subset — never conflated with
+the RAF.
 """
+
+from __future__ import annotations
 
 import numpy as np
 
 from ..networks.core import ReactionNetwork
 
 
-def producible_closure(net: ReactionNetwork) -> tuple[set[int], set[int]]:
-    """Species producible from food, and the reactions that run.
-
-    A reaction is usable when all reactants are available AND (it is
-    spontaneous (rate>0) or at least one catalyst is available).
-    Grow pass to fixed point. Includes non-catalytic chemistry — this is
-    "what can run", not "what is self-maintaining".
-    """
-    available = set(net.food)
-    used: set[int] = set()
+def _closure(net: ReactionNetwork, chan_set: set[int]) -> set[int]:
+    """Food-generated species closure under chan_set, ignoring catalysts."""
+    avail = set(net.food)
     changed = True
     while changed:
         changed = False
-        for r, rxn in enumerate(net.reactions):
-            if r in used or not set(rxn.reactants) <= available:
-                continue
-            if rxn.rate == 0.0 and not set(rxn.catalysts) & available:
-                continue
-            used.add(r)
-            available.update(rxn.products)
-            changed = True
-    return available, used
+        for r in chan_set:
+            rxn = net.channels[r]
+            if all(i in avail for i, _ in rxn.reactants):
+                new = {i for i, _ in rxn.products} - avail
+                if new:
+                    avail |= new
+                    changed = True
+    return avail
 
 
 def raf_reactions(net: ReactionNetwork) -> set[int]:
-    """Indices of reactions in the maximal RAF (self-maintaining) core.
-
-    Candidate set = catalyzed reactions only. Iterate: drop any reaction
-    whose reactants are not food-union-core-products, or whose catalysts
-    are not produced by the core itself. Fixed point is the RAF core.
-    """
-    core = {r for r, rxn in enumerate(net.reactions) if rxn.catalysts}
+    """Indices of channels in the unique maximal RAF (may be empty)."""
+    R = {r for r, ch in enumerate(net.channels) if ch.catalysts}
     while True:
-        produced = set()
-        for r in core:
-            produced.update(net.reactions[r].products)
-        avail = set(net.food) | produced
+        cl = _closure(net, R)
         pruned = {
             r
-            for r in core
-            if set(net.reactions[r].reactants) <= avail
-            and set(net.reactions[r].catalysts) <= produced
+            for r in R
+            if all(i in cl for i, _ in net.channels[r].reactants)
+            and any(c in cl for c in net.channels[r].catalysts)
         }
-        if pruned == core:
-            return core
-        core = pruned
+        if pruned == R:
+            return R
+        R = pruned
 
 
-def raf_core(net: ReactionNetwork) -> set[int]:
-    """Species indices belonging to the maximal reflexively autocatalytic set."""
-    species: set[int] = set()
+def raf_species(net: ReactionNetwork) -> set[int]:
+    """Non-food species participating in the maxRAF."""
+    out: set[int] = set()
     for r in raf_reactions(net):
-        species.update(net.reactions[r].products)
-        species.update(net.reactions[r].reactants)
-        species.update(net.reactions[r].catalysts)
-    return species - net.food
+        ch = net.channels[r]
+        out.update(i for i, _ in ch.products)
+        out.update(i for i, _ in ch.reactants)
+        out.update(ch.catalysts)
+    return out - net.food
 
 
-def organizational_closure(net: ReactionNetwork, flux: np.ndarray) -> float:
-    """Phi: fraction of reaction flux inside the RAF core.
+def kinetic_accessible(net: ReactionNetwork) -> set[int]:
+    """Channels that can fire at all: reactants reachable when uncatalyzed
+    rates (eps-scaled) and catalyst availability are respected. Uses full
+    channel set, eps-aware. Kinetic accessibility != RAF membership."""
+    if net.eps > 0:
+        return {r for r, ch in enumerate(net.channels)
+                if ch.k_f > 0 or ch.k_r > 0}
+    # eps == 0: only catalyzed channels can run, gated by catalyst presence
+    R = {r for r, ch in enumerate(net.channels) if ch.catalysts}
+    while True:
+        cl = _closure(net, R)
+        pruned = {
+            r for r in R
+            if all(i in cl for i, _ in net.channels[r].reactants)
+            and any(c in cl for c in net.channels[r].catalysts)
+        }
+        if pruned == R:
+            return R
+        R = pruned
 
-    flux: per-reaction rates at the state of interest, i.e.
-    net.propensity(x_ss).
+
+def phi_decomposition(
+    net: ReactionNetwork, x: np.ndarray, eps: float | None = None
+) -> dict:
+    """Channel-derived flux decomposition at state x.
+
+    Returns dict with forward/reverse/net flux inside vs outside the RAF:
+      mass_raf   primary order parameter: monomer mass in maxRAF species /
+                 total non-food monomer mass
+      phi_gross  RAF-channel |flux| / total |flux| (structural diagnostic)
+      phi_cat    catalyzed flux inside RAF channels / total |flux|
+      phi_net    net forward RAF flux / total forward flux (diagnostic only)
+    All four are returned with explicit denominators; phi_net can exceed
+    [0,1] and is labeled diagnostic.
     """
-    total = float(np.sum(flux))
-    if total <= 0.0:
-        return 0.0
+    x = np.asarray(x, dtype=float)
+    f, b = net.rates(x, eps)
+    fwd, rev = np.abs(f), np.abs(b)
+    net_flux = f - b
     core = raf_reactions(net)
-    return float(np.sum(flux[list(core)])) / total if core else 0.0
+    core_idx = np.array(sorted(core), dtype=int)
+
+    # which flux is catalyzed vs background? decompose boost factors:
+    # f_r = k_f*mass*(bg + kappa*Cx) -> catalyzed part = k_f*mass*kappa*Cx
+    Rf, Rr, _ = net._factors()
+    kf, kr, synth = net._rate_vectors()
+    x_app = np.append(x, 1.0)
+    mf = np.prod(x_app[Rf], axis=1)
+    mr = np.prod(x_app[Rr], axis=1)
+    cat_amp = net.kappa * (net.catalysis_matrix() @ x)
+    cat_f = kf * mf * cat_amp
+    cat_b = kr * mr * cat_amp
+
+    tot_f = fwd.sum()
+    tot_abs = fwd.sum() + rev.sum()
+    denom = {
+        "tot_forward": float(tot_f),
+        "tot_absflux": float(tot_abs),
+        "tot_catflux": float(cat_f.sum() + cat_b.sum()),
+    }
+    out = {
+        "n_raf_channels": int(len(core)),
+        "phi_gross": (float((fwd + rev)[core_idx].sum()) / tot_abs
+                      if tot_abs > 0 and len(core) else 0.0),
+        "phi_cat": (float((cat_f + cat_b)[core_idx].sum()) / tot_abs
+                    if tot_abs > 0 and len(core) else 0.0),
+        "phi_net": (float(net_flux[core_idx].sum()) / tot_f
+                    if tot_f > 0 and len(core) else 0.0),
+        "mass_raf": _mass_raf(net, x),
+        "denominators": denom,
+    }
+    return out
 
 
-def autocatalytic_activity(net: ReactionNetwork, x: np.ndarray) -> float:
-    """A(lambda): fraction of production flux attributable to catalysis."""
-    cat_flux = 0.0
-    total_flux = 0.0
-    x = np.maximum(np.asarray(x, dtype=float), 0.0)
-    for rxn in net.reactions:
-        if rxn.k_sat is None:
-            mass = 1.0
-            for i, nu in rxn.reactants.items():
-                mass *= x[i] ** nu
-            cat = rxn.cat_rate * mass * sum(x[c] for c in rxn.catalysts)
-        else:
-            mass = 1.0
-            for i, nu in rxn.reactants.items():
-                mass *= (x[i] / (rxn.k_sat + x[i])) ** nu
-            cat = (rxn.cat_rate * mass
-                   * sum(x[c] / (rxn.k_sat + x[c]) for c in rxn.catalysts))
-        cat_flux += cat
-        total_flux += rxn.rate * mass + cat
-    return float(cat_flux / total_flux) if total_flux > 0.0 else 0.0
+def _mass_raf(net: ReactionNetwork, x: np.ndarray) -> float:
+    """Monomer mass inside maxRAF species / total non-food monomer mass."""
+    if net.comp is None:
+        raise ValueError("mass_raf requires a composition matrix")
+    comp_mass = net.comp.sum(axis=0)         # monomer mass per species
+    nonfood = ~net.is_food
+    total = float(comp_mass[nonfood] @ x[nonfood])
+    if total <= 0:
+        return 0.0
+    core_s = sorted(raf_species(net))
+    if not core_s:
+        return 0.0
+    idx = np.array(core_s, dtype=int)
+    return float(comp_mass[idx] @ x[idx] / total)

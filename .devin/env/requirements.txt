@@ -1,0 +1,9 @@
+# Pinned runtime env for chemtrans 2.0 (created via `uv venv .devin/env/venv --python 3.12`
+# then `uv pip install --python .devin/env/venv/bin/python -e ".[dev]"`)
+python==3.12.11
+numpy==2.5.3
+scipy==1.18.1
+networkx==3.7
+matplotlib==3.11.2
+pandas==3.0.6
+pytest==9.1.1

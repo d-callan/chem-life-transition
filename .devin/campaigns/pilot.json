@@ -1,0 +1,27 @@
+{
+  "name": "pilot",
+  "experiment": "E2_cstr_bifurcation",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 3,
+      "alphabet_size": 2,
+      "p_cat": 0.3,
+      "p_info": 0.0,
+      "p_selfrep": 0.4,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 20.0
+    },
+    "reactor": {"type": "cstr", "dilution": 0.05, "t_max": 150.0},
+    "stochastic": {"enabled": true, "volume": 200.0, "replicates": 2,
+                   "t_max": 50.0, "max_events": 500000}
+  },
+  "sweeps": [
+    {"param": "generator.p_cat", "values": [0.0, 0.2, 0.4, 0.6, 0.8]},
+    {"param": "generator.p_selfrep", "values": [0.2, 0.6]}
+  ],
+  "n_networks": 2,
+  "out_dir": "data/pilots"
+}

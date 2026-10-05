@@ -1,119 +1,187 @@
-"""Persistence and self-maintenance S(lambda), heredity/evolvability H/E.
+"""First-passage / survival analysis with honest censoring.
 
-self_maintenance
-    Deepest dilution shock the organized state survives: re-simulate from
-    x_ss * (1 - s) for increasing s and find where Phi fails to recover.
-    The dynamical definition of self-maintenance — does the RAF core
-    re-establish after losing most of its material?
-reproductive_number
-    R0 of the organized state via a next-generation matrix:
-    G[c, j] = (flux of j catalyzed by c) / (dilution * x_c) — expected
-    "offspring" species-production events per unit lifetime of c.
-    R0 = rho(G): >1 means the catalytic population grows.
-evolvability_proxy
-    Fraction of single-edge catalyst mutations that change the RAF core —
-    does heritable phenotypic variation exist at all?
+Conventions:
+
+- Event times are extracted by `first_passage_times` (dwell-conditioned:
+  a trajectory counts as having entered the organized region only if it
+  stays at or above `theta_hi` for `dwell` consecutive recorded time).
+- Observations are (time, event_flag): censored trajectories carry
+  their censoring time, never imputed event times.
+- Kaplan-Meier and Nelson-Aalen are standard right-censored estimators.
+- RMST integrates the KM curve to a fixed horizon t_star (never beyond
+  the data).
+- Scaling fits (ln tau ~ V etc.) are the caller's responsibility; this
+  module reports estimators, not claimed exponents.
 """
+
+from __future__ import annotations
 
 import numpy as np
 
-from ..dynamics.ode import simulate
-from ..networks.core import Reaction, ReactionNetwork
-from .closure import organizational_closure, raf_core, raf_reactions
 
+def region_state(t: np.ndarray, o: np.ndarray,
+                 theta_hi: float, theta_lo: float) -> np.ndarray:
+    """Hysteretic in/out state of the organized region.
 
-def self_maintenance(
-    net: ReactionNetwork,
-    x_ss: np.ndarray,
-    feed_rate: float = 1.0,
-    dilution_rate: float = 0.1,
-    t_recover: float = 100.0,
-    shocks: tuple = (0.5, 0.7, 0.9, 0.99, 0.999),
-) -> float:
-    """S(lambda): deepest fractional dilution shock survived, in [0,1].
-
-    0.0 = dies to any tested shock; ~1.0 = recovers from near-total loss.
+    in-region turns ON when o >= theta_hi and OFF when o < theta_lo;
+    inside the hysteretic band the previous state persists.
     """
-    flux0 = net.propensity(x_ss)
-    phi0 = organizational_closure(net, flux0)
-    if phi0 <= 0.0:
-        return 0.0
-    survived = 0.0
-    for s in shocks:
-        try:
-            _, X = simulate(net, (0.0, t_recover), feed_rate=feed_rate,
-                            dilution_rate=dilution_rate,
-                            x0=x_ss * (1.0 - s), steady_check=False)
-        except RuntimeError:
-            break
-        last = X[~np.isnan(X).any(axis=1)]
-        if len(last) == 0:
-            break
-        phi_post = organizational_closure(net, net.propensity(last[-1]))
-        if phi_post >= 0.5 * phi0:
-            survived = s
-        else:
-            break
-    return float(survived)
+    t = np.asarray(t, float)
+    o = np.asarray(o, float)
+    state = np.zeros(len(t), dtype=bool)
+    inside = False
+    for k in range(len(t)):
+        if o[k] >= theta_hi:
+            inside = True
+        elif o[k] < theta_lo:
+            inside = False
+        state[k] = inside
+    return state
 
 
-def reproductive_number(
-    net: ReactionNetwork, x: np.ndarray, dilution_rate: float = 0.1
-) -> float:
-    """R0 = spectral radius of the next-generation matrix at state x."""
-    x = np.maximum(np.asarray(x, dtype=float), 1e-12)
-    G = np.zeros((net.n_species, net.n_species))
-    for rxn in net.reactions:
-        if rxn.k_sat is None:
-            mass = 1.0
-            for i, nu in rxn.reactants.items():
-                mass *= x[i] ** nu
-        else:
-            mass = 1.0
-            for i, nu in rxn.reactants.items():
-                mass *= (x[i] / (rxn.k_sat + x[i])) ** nu
-        for c in rxn.catalysts:
-            for j in rxn.products:
-                # per-capita production rate of j catalyzed by c, times the
-                # dilution lifetime 1/dilution_rate
-                if rxn.k_sat is None:
-                    G[c, j] += rxn.cat_rate * mass / dilution_rate
-                else:
-                    G[c, j] += (rxn.cat_rate * mass
-                                / (rxn.k_sat + x[c]) / dilution_rate)
-    if not np.any(G):
-        return 0.0
-    return float(max(abs(np.linalg.eigvals(G))))
+def first_passage_times(
+    series: list[tuple[np.ndarray, np.ndarray]],
+    theta_hi: float,
+    dwell: float,
+    theta_lo: float | None = None,
+) -> list[tuple[float, bool]]:
+    """Dwell-conditioned first-entry times into the organized region.
 
-
-def evolvability_proxy(
-    net: ReactionNetwork, n_mut: int = 20, seed: int | None = None
-) -> float:
-    """Fraction of single-catalyst-edge mutations that alter the RAF core.
-
-    Heredity requires that organization admits variants; if every mutation
-    leaves the core identical (or destroys it entirely is counted as a
-    change), there is heritable structure to select on.
+    Entry is credited when the hysteretic region state stays ON for
+    `dwell` units of time continuously. Returns [(t_entry, True)] for
+    observed entries, [(t_censor, False)] for censored trajectories.
     """
-    rng = np.random.default_rng(seed)
-    core0 = raf_reactions(net)
-    cat_rxns = [r for r, rxn in enumerate(net.reactions) if rxn.catalysts]
-    if not core0 or not cat_rxns:
+    if theta_lo is None:
+        theta_lo = theta_hi
+    out = []
+    for t, o in series:
+        t = np.asarray(t, float)
+        state = region_state(t, o, theta_hi, theta_lo)
+        entry = None
+        on_time = None
+        for k in range(len(t)):
+            if state[k]:
+                if on_time is None:
+                    on_time = t[k]
+                if t[k] - on_time >= dwell:
+                    entry = t[k]
+                    break
+            else:
+                on_time = None
+        out.append((entry if entry is not None else float(t[-1]),
+                    entry is not None))
+    return out
+
+
+def kaplan_meier(times: np.ndarray, events: np.ndarray):
+    """KM survival curve. Returns (t_knots, S, se_greenwood)."""
+    times = np.asarray(times, float)
+    events = np.asarray(events, bool)
+    order = np.argsort(times)
+    times, events = times[order], events[order]
+    t_knots, S, se = [0.0], [1.0], [0.0]
+    surv, var = 1.0, 0.0
+    uniq = np.unique(times)
+    for tt in uniq:
+        at_risk = np.sum(times >= tt)
+        d = np.sum(events & (times == tt))
+        if at_risk == 0:
+            continue
+        surv *= 1.0 - d / at_risk
+        if at_risk - d > 0:
+            var += d / (at_risk * (at_risk - d))
+        t_knots.append(float(tt))
+        S.append(surv)
+        se.append(surv * np.sqrt(var))
+    return np.array(t_knots), np.array(S), np.array(se)
+
+
+def nelson_aalen(times: np.ndarray, events: np.ndarray):
+    """Cumulative hazard estimate. Returns (t_knots, H)."""
+    times = np.asarray(times, float)
+    events = np.asarray(events, bool)
+    t_knots, H = [0.0], [0.0]
+    h = 0.0
+    for tt in np.unique(times):
+        at_risk = np.sum(times >= tt)
+        d = np.sum(events & (times == tt))
+        if at_risk == 0:
+            continue
+        h += d / at_risk
+        t_knots.append(float(tt))
+        H.append(h)
+    return np.array(t_knots), np.array(H)
+
+
+def rmst(times: np.ndarray, events: np.ndarray,
+         t_star: float) -> float:
+    """Restricted mean survival time: integral of KM S(t) on [0, t_star].
+
+    t_star must not exceed the largest observed time; caller chooses it
+    (typically min over trajectories of censor/event times).
+    """
+    if t_star <= 0:
         return 0.0
-    changed = 0
-    valid = 0
-    for _ in range(n_mut):
-        reactions = [
-            Reaction(dict(r.reactants), dict(r.products), list(r.catalysts),
-                     r.rate, r.cat_rate, r.k_sat)
-            for r in net.reactions
-        ]
-        r = int(rng.choice(cat_rxns))
-        reactions[r].catalysts = [int(rng.integers(net.n_species))]
-        mutant = ReactionNetwork(net.species, reactions, set(net.food),
-                                 dict(net.structure))
-        if raf_reactions(mutant):
-            valid += 1
-            if raf_reactions(mutant) != core0:
-                changed += 1
-    return float(changed / valid) if valid else 0.0
+    t_knots, S, _ = kaplan_meier(times, events)
+    t_ext = np.append(np.clip(t_knots, 0, t_star), t_star)
+    t_ext = np.unique(t_ext)
+    S_at = np.empty_like(t_ext)
+    for i, tt in enumerate(t_ext):
+        j = np.searchsorted(t_knots, tt, side="right") - 1
+        S_at[i] = S[max(j, 0)]
+    return float(np.trapezoid(S_at, t_ext))
+
+
+def survival_table(obs: list[tuple[float, bool]]) -> dict:
+    """Bundle times/events arrays + counts for run records."""
+    times = np.array([o[0] for o in obs])
+    events = np.array([o[1] for o in obs])
+    return {
+        "times": times,
+        "events": events,
+        "n": int(len(times)),
+        "n_events": int(events.sum()),
+        "n_censored": int((~events).sum()),
+        "max_observed_time": float(times.max()) if len(times) else 0.0,
+    }
+
+
+def extinction_scale_fit(volumes: np.ndarray, tau: np.ndarray) -> dict:
+    """Fit ln(tau_ext) = a + b*V (mean-field exponential survival scaling).
+
+    For background-driven NUCLEATION times the expected trend is
+    decreasing in V (more chances to nucleate); that direction must be
+    fit with tau ~ 1/V or a decreasing function, NOT ln tau ~ V. This
+    function is for extinction/persistence times only.
+    """
+    volumes = np.asarray(volumes, float)
+    tau = np.asarray(tau, float)
+    if len(volumes) < 3:
+        return {"status": "insufficient_points", "n": int(len(volumes))}
+    y = np.log(tau)
+    A = np.polyfit(volumes, y, 1)
+    pred = np.polyval(A, volumes)
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    return {"status": "ok", "slope_V": float(A[0]),
+            "intercept": float(A[1]),
+            "r2": 1.0 - ss_res / max(ss_tot, 1e-300),
+            "n": int(len(volumes))}
+
+
+def nucleation_scale_fit(volumes: np.ndarray, tau: np.ndarray) -> dict:
+    """Fit tau_nuc ~ C / V^g for background-driven nucleation."""
+    volumes = np.asarray(volumes, float)
+    tau = np.asarray(tau, float)
+    if len(volumes) < 3:
+        return {"status": "insufficient_points", "n": int(len(volumes))}
+    y = np.log(tau)
+    x = np.log(volumes)
+    A = np.polyfit(x, y, 1)
+    pred = np.polyval(A, x)
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    return {"status": "ok", "gamma": float(-A[0]),
+            "log_C": float(A[1]),
+            "r2": 1.0 - ss_res / max(ss_tot, 1e-300),
+            "n": int(len(volumes))}

@@ -10,3 +10,9 @@ data/*.csv
 data/*.png
 !data/.gitkeep
 .pytest_cache/
+
+# chemtrans 2.0 campaign outputs (regenerate via experiments/campaign.py)
+data/validation/
+data/pilots/
+data/confirmation/
+.devin/env/venv/
