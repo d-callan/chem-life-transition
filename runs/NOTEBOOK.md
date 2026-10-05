@@ -214,3 +214,60 @@ larger pool (max_len>=6) or biased generation.
 E0-E5 complete with honest outcomes; E6 preliminary (n=8);
 E7 null (pool too small); E8 partially addressed via E3 V-scaling —
 formal eps/V limit-order scaling remains future work.
+
+## E9 co-criticality apparatus + first D-axis sweeps (cocritd1/d2, assemblyl6)
+
+New measurement layers: life_vector six-observable schema (each with
+explicit defined/undefined, never silent zeros); reactor.multistability
+(deterministic 16-IC bank, min_mass=0.01, Jacobian-stability floor);
+reactor.competition (two-stage: scan -> raw AND equal-mass mixture SSA,
+n=30 reps, mass-floored winner labels); analysis.cocriticality
+(per-observable lc via model selection for continuous, changepoint for
+discrete O_hered; paired network-joint bootstrap; full pairwise matrix
+with indistinguishable/separated/incomparable verdicts).
+
+### Ghost class #2 (found and fixed during this work)
+
+Several "STATIONARY" endpoints certified by the integrator had positive
+leading Jacobian eigenvalues — unstable fixed points or slow transients,
+not attractors. p1 net3 falsely showed n_att=3 without a stability
+floor. cluster membership now requires eig<0 AND mass>=min_mass.
+
+### p1 (linear catalysis) D-sweep, eps=0, seeded
+
+- O_maint: onset selected, lc=-1.124 => D_c~1.12 (reproduces E2b's
+  certified D_c~1.13). [Gate D pass]
+- O_hered: none — p1 nets genuinely monostable under stability floor.
+- O_persist: null at V=16 — seeded SSA dies almost immediately across
+  the grid; finite-volume persistence needs larger V / lower D.
+- O_raf: none (structural, D-invariant by construction — orthogonal).
+- O_select: undefined (n_att<2, correct conditional behavior).
+- O_assembly: null.
+
+### p2 (cooperative, kappa=500) D-sweep, eps=0, seeded — CASCADE signature
+
+- O_maint: onset at lc=-1.025 (D_c~1.0).
+- O_persist: onset at lc=-0.261 (D~0.26) — SEPARATED from O_maint
+  (bootstrap CI95 of the difference excludes 0, width 0.51).
+- O_hered: discrete changepoint lc=-0.1 (D~0.1); n_att>=2 only at low D.
+- O_select: defined where comp ran; on net0 D=0.05 attractor A wins
+  29/30 raw AND 21/30 equal-mass — asymmetry survives the
+  initial-mass control (n=30). Flat elsewhere -> null class.
+- Pairwise: maint|persist separated; maint|hered and persist|hered
+  indistinguishable but with WIDE CIs (1.26, 0.77) — failure to reject,
+  not tight coincidence.
+
+=> on the D axis the toy model shows an ordered cascade
+(maint ~1.0 > persist ~0.26 > hered ~0.1), not co-criticality; plus
+orthogonal observables (O_raf structural; O_assembly null at L<=6).
+Caveats: n_networks=3 (bootstrap CIs wide); O_persist is a finite-V
+estimator (V=64 for p2, V=16 for p1 — not comparable across protocols);
+O_select conditional on O_hered by design.
+
+### assembly_l6 (max_len=6, deterministic only)
+
+n_sig=0, mass_sig=0 at all organized equilibria on both nets —
+combinatorial depth alone does not produce high-assembly dominants;
+the organized phase still concentrates mass in short polymers.
+Assembly likely needs an explicit bias (p_info>0 or energy structure
+favoring long chains). Null, honestly reported.

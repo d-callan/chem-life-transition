@@ -75,17 +75,22 @@ def extract_series(by_net: dict[str, list[dict]],
     return out
 
 
+def _clean_aicc(aicc: dict) -> dict:
+    return {m: (float(v) if np.isfinite(v) else None)
+            for m, v in aicc.items()}
+
+
 def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
                            seed: int = 0) -> LcEstimate:
     fit = fit_all_models(lam, y, seed=seed)
     sel, params = fit["selected"], fit["params"]
+    detail = {"selected": sel, "aicc": _clean_aicc(fit["aicc"])}
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
-        return LcEstimate(float(params[key]), cls,
-                          {"selected": sel, "aicc": fit["aicc"],
-                           "delta_aicc": fit["delta_aicc"]})
+        detail["delta_aicc"] = _clean_aicc(fit["delta_aicc"])
+        return LcEstimate(float(params[key]), cls, detail)
     return LcEstimate(None, "none" if sel == "null" else "crossover",
-                      {"selected": sel, "aicc": fit["aicc"]})
+                      detail)
 
 
 def estimate_lc_discrete(by_net_series: dict, active_pred,
@@ -105,11 +110,13 @@ def estimate_lc_discrete(by_net_series: dict, active_pred,
                   for l0 in lam if l0 == lv)
         fracs.append(act / tot if tot else np.nan)
     fracs = np.asarray(fracs)
+    frac_dict = {float(g): (float(f) if np.isfinite(f) else None)
+                 for g, f in zip(grid, fracs)}
     hits = [grid[i] for i, f in enumerate(fracs)
             if np.isfinite(f) and f >= threshold]
     if not hits:
         return LcEstimate(None, "none",
-                          {"active_fraction": dict(zip(grid, fracs.tolist()))})
+                          {"active_fraction": frac_dict})
     lc = hits[0]
     # uncertainty: neighboring grid values where frac < threshold
     below = [g for g, f in zip(grid, fracs)
@@ -119,8 +126,7 @@ def estimate_lc_discrete(by_net_series: dict, active_pred,
     return LcEstimate(lc, "discrete_changepoint",
                       {"lc_lo": below[-1] if below else None,
                        "lc_hi": above[0] if above else None,
-                       "active_fraction": dict(zip(grid,
-                                                   fracs.tolist()))})
+                       "active_fraction": frac_dict})
 
 
 def _lc_for_obs(by_net: dict[str, list[dict]], obs: str,
