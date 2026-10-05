@@ -86,7 +86,7 @@ class _BudgetExceeded(Exception):
 def species_assembly(net, species_index: int,
                      **kw) -> tuple[int, str]:
     """Assembly index of species i's string label."""
-    return assembly_index(net.labels[species_index], **kw)
+    return assembly_index(net.species[species_index], **kw)
 
 
 def null_ma_distribution(rng: np.random.Generator, length: int,
@@ -138,7 +138,7 @@ def assembly_signature(
     for i in range(net.n_species):
         if not nonfood[i]:
             continue
-        lab = net.labels[i]
+        lab = net.species[i]
         a, est = assembly_index(lab, exact_limit=exact_limit)
         frac = float(comp_mass[i] * x[i] / total) if total > 0 else 0.0
         thr = ma_thresholds.get(len(lab))

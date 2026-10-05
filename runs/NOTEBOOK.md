@@ -198,3 +198,19 @@ Seeded SSA on certified attractor compositions (8 reps, t_max=400):
 Robustness correlates with attractor mass (AA 0.35 > BB 0.18).
 Compositional types have differential finite-copy persistence — a
 primitive selection axis exists (exploratory, n=8, no CI yet).
+
+## E7 assembly-complexity signature (seed3/k500 attractors)
+
+assembly_signature with null-calibrated per-length thresholds:
+n_signature=0, mass_signature=0 on ALL five organized attractors.
+Dominant species (AA, BB, AAAB, BBBA) have assembly indices 1-3,
+below their length-conditional 95% null quantiles. The organized
+phase is dominated by short homopolymers — no high-assembly objects.
+Null result, expected at max_len=4; assembly signature would need a
+larger pool (max_len>=6) or biased generation.
+
+## Status of the campaign ladder
+
+E0-E5 complete with honest outcomes; E6 preliminary (n=8);
+E7 null (pool too small); E8 partially addressed via E3 V-scaling —
+formal eps/V limit-order scaling remains future work.
