@@ -1,0 +1,32 @@
+{
+  "name": "e2epsd",
+  "experiment": "E2_cstr_bifurcation_dilution_finite_eps",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.01,
+      "kappa": 20.0
+    },
+    "reactor": {
+      "type": "cstr",
+      "t_max": 800.0
+    },
+    "eps": 0.01
+  },
+  "sweeps": [
+    {
+      "param": "reactor.dilution",
+      "values": [0.6, 0.7, 0.8, 0.9, 1.0, 1.05, 1.1, 1.15, 1.2, 1.3, 1.4]
+    }
+  ],
+  "seed_keys": ["e1land|net3", "e1land|net7"],
+  "order_parameter": "mass_raf",
+  "out_dir": "data/validation"
+}

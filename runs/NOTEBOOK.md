@@ -165,3 +165,36 @@ extinction time grows strongly with V — first-order phenomenology
 Infra fixes this round: run_id now includes the stochastic spec
 (volume sweeps no longer collide); t_extinction only counts
 post-organization extinction for unseeded starts.
+
+## E2b bifurcation certification (formal model selection)
+
+Order parameter = total nonfood polymer mass (mass_raf saturates at 1
+while organized; phi_net degenerates the fit). Control lam = -D.
+
+- eps=0 (seeded, e2eps0d): `hinge` selected on both RAF+ nets
+  (delta_AICc: itrans 3.8, sigmoid 26, fold 37). lc=-1.133 ->
+  D_c ~ 1.13, mass ~ A(D_c - D): linear turn-on, beta=1. Continuous
+  transcritical-type transition certified.
+- eps=0.01 (unseeded, e2epsd): `itrans` selected decisively
+  (delta sigmoid 15.5, hinge 42): imperfect transcritical with
+  rounding field c_field ~ 0.01-0.014 ~ eps, lc=-1.07.
+- Leading eigenvalue -> 0^- monotonically approaching D_c
+  (-0.004 at D=1.15) — critical slowing down confirmed.
+
+## E4 causal turnover (seed3/k500 AA attractor, exploratory)
+
+- AA-catalyst knockout (K_eq unchanged): complete collapse to dead.
+- 90% polymer mass loss: full recovery (mass 0.177, composition AA).
+- 99% mass loss: dies — fold separatrix confirmed dynamically.
+- without_catalysis() control: dead.
+=> the organized state is causally self-maintained by catalysis, with
+a genuine basin threshold between ~90% and ~99% loss.
+
+## E6 differential lineage survival (SSA, seed3/k500, eps=0)
+
+Seeded SSA on certified attractor compositions (8 reps, t_max=400):
+- V=16: AA 0/8 survive (t_ext 18-162), BB 0/8 (t_ext 9-107).
+- V=64: AA 8/8 survive; BB 7/8 (one extinction at t=107).
+Robustness correlates with attractor mass (AA 0.35 > BB 0.18).
+Compositional types have differential finite-copy persistence — a
+primitive selection axis exists (exploratory, n=8, no CI yet).
