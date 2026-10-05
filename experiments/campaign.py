@@ -319,6 +319,21 @@ def cmd_summarize(args):
                 "status": "insufficient_points",
                 "n_lambda": len(lams)}
 
+    # co-criticality summary: per-observable λc + pairwise matrix
+    if manifest["protocol"].get("summarize_mode") == "cocriticality":
+        if control is None:
+            raise SystemExit(
+                "cocriticality mode requires a sweep control")
+        from chemtrans.analysis import cocriticality as cc
+        from chemtrans.observables.life_vector import life_vector
+        for r in records:
+            r["life_vector"] = life_vector(r)
+            r["control"] = {"axis": control,
+                            "lam": float(r["sweep"][control])}
+        summary["cocriticality"] = cc.coincidence_report(
+            cc.group_by_network(records),
+            n_boot=int(args.boot))
+
     (cdir / "summary.json").write_text(
         json.dumps(strict_jsonable(summary), indent=2, sort_keys=True))
     print(json.dumps({k: summary[k] for k in
@@ -341,6 +356,7 @@ def main():
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("summarize")
     p.add_argument("--manifest", required=True)
+    p.add_argument("--boot", type=int, default=400)
     p.set_defaults(fn=cmd_summarize)
     args = ap.parse_args()
     args.fn(args)

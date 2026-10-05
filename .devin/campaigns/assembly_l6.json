@@ -1,0 +1,32 @@
+{
+  "name": "assemblyl6",
+  "experiment": "assembly_complexity_L6_deterministic",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 6,
+      "alphabet_size": 2,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 500.0,
+      "cat_power": 2
+    },
+    "eps": 0.0,
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.5,
+      "t_max": 600.0
+    }
+  },
+  "sweeps": [
+    {"param": "reactor.dilution",
+     "values": [0.3, 0.5, 0.7, 0.9, 1.1]}
+  ],
+  "seed_keys": ["e1land|net3", "e1land|net7"],
+  "order_parameter": "equilibrium.assembly_signature.mass_signature",
+  "out_dir": "data/validation"
+}
