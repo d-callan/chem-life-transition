@@ -1,0 +1,85 @@
+{
+  "name": "e3ext",
+  "experiment": "E3_ssa_organized_extinction",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.6,
+      "p_info": 0.7,
+      "p_selfrep": 0.5,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.0,
+      "kappa": 500.0,
+      "cat_power": 2,
+      "seed": 3
+    },
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.05,
+      "t_max": 400.0,
+      "x0": [
+        0.15000000000000002,
+        0.15000000000000002,
+        0.35,
+        0.35,
+        0.0,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15
+      ]
+    },
+    "eps": 0.0,
+    "stochastic": {
+      "enabled": true,
+      "replicates": 6,
+      "t_max": 400.0,
+      "record_dt": 0.2,
+      "max_events": 4000000,
+      "theta_organized": 0.1,
+      "x0_from": "reactor"
+    }
+  },
+  "sweeps": [
+    {
+      "param": "stochastic.volume",
+      "values": [
+        4,
+        16,
+        64
+      ]
+    }
+  ],
+  "seed_keys": [
+    "e2coop|s3"
+  ],
+  "order_parameter": "mass_raf",
+  "out_dir": "data/validation"
+}

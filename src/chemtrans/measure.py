@@ -95,7 +95,9 @@ def measure_run(task: dict) -> dict:
                                         for c in net.channels)),
     }
     rec["run_id"] = run_id(net.hash, {"gen": gen_spec, "reactor": reactor,
-                                      "eps": eps}, seed_key)
+                                      "eps": eps,
+                                      "stochastic": task.get("stochastic")},
+                           seed_key)
 
     # ---- deterministic ----
     if rtype == "structural":
@@ -216,7 +218,14 @@ def measure_run(task: dict) -> dict:
             nf = res.n[:, nonfood].sum(axis=1)
             above = o > theta
             idx_org = np.nonzero(above)[0]
-            idx_ext = np.nonzero(nf == 0)[0]
+            if nf[0] > 0:
+                # seeded start: first time all nonfood counts hit zero
+                idx_ext = np.nonzero(nf == 0)[0]
+            elif len(idx_org):
+                # unseeded: only post-organization extinction is meaningful
+                idx_ext = np.nonzero(nf[idx_org[0]:] == 0)[0] + idx_org[0]
+            else:
+                idx_ext = np.array([], dtype=int)
             reps.append({
                 "seed": seed,
                 "completed": res.completed,

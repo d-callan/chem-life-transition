@@ -1,0 +1,78 @@
+{
+  "name": "e5linabbb",
+  "experiment": "E5_serial_transfer_lineage",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.6,
+      "p_info": 0.7,
+      "p_selfrep": 0.5,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.0,
+      "kappa": 20.0,
+      "cat_power": 2,
+      "seed": 4
+    },
+    "reactor": {
+      "type": "sd",
+      "tau": 20.0,
+      "d_factor": 4.0,
+      "n_cycles": 10,
+      "x0": [
+        0.3811813190235564,
+        0.3811813190235564,
+        0.11881868097644356,
+        0.11881868097644356,
+        0.4623626380471128,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        9.62964972193618e-35,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "eps": 0.0
+  },
+  "sweeps": [
+    {
+      "param": "reactor.d_factor",
+      "values": [
+        2.0,
+        4.0,
+        8.0,
+        16.0
+      ]
+    }
+  ],
+  "seed_keys": [
+    "e2coop|s4"
+  ],
+  "order_parameter": "mass_raf",
+  "out_dir": "data/validation"
+}

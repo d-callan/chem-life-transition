@@ -50,14 +50,25 @@ def cluster_attractors(
     net: ReactionNetwork,
     equilibria: list[np.ndarray],
     tol: float = 0.05,
+    min_mass: float = 0.0,
 ) -> dict:
     """Greedy clustering of certified equilibria by signature distance.
 
-    Returns {n_attractors, labels, centers, members}; caller must pass
-    only x_eq values that are certified STATIONARY — uncertified
-    endpoints must not reach this function.
+    `min_mass` filters out equilibria whose total non-food mass is below
+    the threshold — without it, near-dead endpoints (~1e-35 residue)
+    produce normalized "ghost" signatures that mimic organized
+    attractors. Returns {n_attractors, labels, centers, members,
+    kept_idx}; labels are indexed into the *kept* equilibria.
     """
-    sigs = [attractor_signature(net, x) for x in equilibria]
+    if min_mass > 0:
+        w = np.where(net.is_food, 0.0, 1.0)
+        if net.comp is not None:
+            w = w * net.comp.sum(axis=0)
+        masses = [float(w @ np.maximum(x, 0.0)) for x in equilibria]
+        kept = [x for x, m in zip(equilibria, masses) if m >= min_mass]
+    else:
+        kept = list(equilibria)
+    sigs = [attractor_signature(net, x) for x in kept]
     labels = np.full(len(sigs), -1, dtype=int)
     centers: list[np.ndarray] = []
     for i, s in enumerate(sigs):
@@ -73,6 +84,8 @@ def cluster_attractors(
         "labels": labels,
         "centers": centers,
         "members": {c: int((labels == c).sum()) for c in range(len(centers))},
+        "n_input": len(equilibria),
+        "n_kept": len(kept),
     }
 
 
@@ -83,6 +96,7 @@ def multistability_scan(
     n_ic: int = 12,
     seed: int = 0,
     tol: float = 0.05,
+    min_mass: float = 0.0,
     **integ_kw,
 ) -> dict:
     """Integrate from varied initial conditions; cluster attractors.
@@ -109,12 +123,13 @@ def multistability_scan(
         if r.converged:
             eqs.append(r.x_eq)
             labels_ok.append(k)
-    cl = cluster_attractors(net, eqs, tol) if eqs else {
+    cl = cluster_attractors(net, eqs, tol, min_mass) if eqs else {
         "n_attractors": 0, "labels": np.array([]), "centers": [],
-        "members": {}}
+        "members": {}, "n_input": 0, "n_kept": 0}
     return {
         "n_attractors": cl["n_attractors"],
         "n_certified": len(eqs),
+        "n_kept": cl["n_kept"],
         "n_ics": len(ics),
         "ic_status": status,
         "converged_ic": labels_ok,
@@ -151,8 +166,13 @@ def serial_transfer_test(
     sig_ref = attractor_signature(net, x_organized)
     x = np.asarray(x_organized, float).copy()
 
+    w = np.where(net.is_food, 0.0, 1.0)
+    if net.comp is not None:
+        w = w * net.comp.sum(axis=0)
+
     dist_post_dilution = []
     dist_post_recovery = []
+    mass_post_recovery = []
     for _ in range(n_cycles):
         sol = ode_mod.sd_map(net, x, tau, d_factor, 1, eps)
         batch_end = sol[1][0]                    # end of batch, pre-dilution
@@ -163,10 +183,12 @@ def serial_transfer_test(
         dist_post_recovery.append(
             compositional_distance(sig_ref,
                                    attractor_signature(net, batch_end)))
+        mass_post_recovery.append(float(w @ np.maximum(batch_end, 0.0)))
         x = x_next
     return {
         "dist_post_dilution": dist_post_dilution,
         "dist_post_recovery": dist_post_recovery,
+        "mass_post_recovery": mass_post_recovery,
         "n_cycles": n_cycles,
         "d_factor": d_factor,
         "tau": tau,

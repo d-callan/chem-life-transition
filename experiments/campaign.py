@@ -226,7 +226,8 @@ def _preview_id(task_entry: dict) -> str:
     gen.setdefault("seed", derive_seed(task_entry["seed_key"] + "|gen"))
     net, _ = build_network(gen)
     params = {"gen": gen, "reactor": task_entry["task"].get("reactor", {}),
-              "eps": task_entry["task"].get("eps", net.eps)}
+              "eps": task_entry["task"].get("eps", net.eps),
+              "stochastic": task_entry["task"].get("stochastic")}
     return run_id(net.hash, params, task_entry["seed_key"])
 
 

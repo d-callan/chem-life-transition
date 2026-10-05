@@ -116,3 +116,52 @@ deterministically; differential survival requires finite-copy SSA.
 - (b) E3 SSA persistence/volume-scaling of extinction times near
   D_c at eps->0 — distinguish true absorbing transition from
   crossover by V in {1,4,16,64} and eps in {1,1e-2,1e-4,0}.
+
+## Correction: ghost-attractor artifact (cat_power=2 first pass)
+
+The first p=2 scan reported compositional multistability on seed-4
+(kappa=20, D=0.05). Wrong: `attractor_signature` normalizes nonfood
+composition, so certified dead endpoints with ~1e-35 residue produced
+fake "organized" attractor signatures; serial transfer then trivially
+"transmitted" them. An absolute-mass scan shows the seed-4/kappa=20
+net has NO organized state at D=0.05 at all (all seeds -> exact dead).
+Fix applied: `cluster_attractors`/`multistability_scan` now take
+`min_mass` (absolute nonfood mass floor); `serial_transfer_test`
+records `mass_post_recovery`.
+
+## Cooperative catalysis, take 2 (REAL, mass-verified)
+
+At kappa>=200 (D=0.05, eps=0): 14/32 (seed,kappa) combos are
+GENUINELY multistable — e.g. seed3/k500 has 5 organized attractors
+(mass 0.14-0.35) including pure {AA} and pure {BB}; seed11/k500 has 6.
+
+Serial transfer (protocols e5_lineage_{aa,bb}, sd d=2..16, tau=20):
+both AA and BB lineages hold STATIONARY SD fixed points with
+mass_raf=1.0 at all dilution factors; Floquet |lambda_max| ~ 1/d.
+Cross-injection is asymmetric: AA invades the BB attractor at 0.02
+pulse; BB cannot invade AA even at 0.5. Compositional heredity via
+attractor retention is confirmed on real mass-bearing states.
+
+## E3 SSA campaigns (data/validation/e3nuc, e3ext)
+
+e3nuc: p=1 net3, unseeded, D=1.0 (below det. Dc~1.13), eps x V grid.
+- eps=0: zero nucleation at all V — absorbing state confirmed.
+- eps=1e-4: rare nucleation (1-2/6, t_org~170-320), all re-extinct.
+- eps=1e-2: nucleation 6/6 at V>=16; t_org falls with V (82->11);
+  all re-extinct within t=400.
+- eps=1: immediate nucleation; dwell rises with V (0.15->0.89);
+  5/6 re-extinct at V=64, 1 persists.
+Interpretation: near-critical organized episodes are transient at
+finite V; persistence grows with V — consistent with a continuous
+transition sharpening in the thermodynamic limit.
+
+e3ext: p=2 seed3/k500, dense-seeded organized state, eps=0.
+- V=4,16: 100% extinction, t_ext ~ 60-127.
+- V=64: 3/6 extinct (t~150-197), 3/6 persist at O_final=1.0.
+Interpretation: metastable organized state + absorbing dead state;
+extinction time grows strongly with V — first-order phenomenology
+(nucleation barrier, finite-copy metastability).
+
+Infra fixes this round: run_id now includes the stochastic spec
+(volume sweeps no longer collide); t_extinction only counts
+post-organization extinction for unseeded starts.
