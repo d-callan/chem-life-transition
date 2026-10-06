@@ -351,15 +351,28 @@ caveats), plus substring caching across the pool.
 
 ### Knob A: `min_cat_len` and Catalytic Multiplicity
 
-- **The Leak**: In `generators.py`, `p_selfrep` and `p_info` bypass `min_cat_len`, allowing short dimers to catalyze reactions.
-- **The Graph Collapse (Verified Probe)**: When `min_cat_len >= 3` was strictly enforced across all branches, **0 out of 10 networks formed an RAF**!
-- **The Root Cause**: Each reaction in `generators.py` is assigned **at most one catalyst** (`cats = (...,)`). To synthesize a length-4 catalyst from food, a 4-step reaction chain must be catalyzed:
-  $$1 \xrightarrow{C_a} 2 \xrightarrow{C_b} 3 \xrightarrow{C_c} 4$$
-  If $C_a, C_b, C_c$ must have length $\ge 4$, and each reaction picks only *one random catalyst* from the 112 long polymers, the probability that the dependency graph contains a closed cycle back to food is $< 10^{-4}$.
-- **The Solution**: Raising `min_cat_len` requires **catalytic promiscuity / multiplicity**:
-  - Allow channels to have multiple candidate catalysts (`n_catalysts_per_channel > 1`), OR
-  - Increase $p_{\text{cat}}$ proportionally to the reduction in eligible candidate pool size.
-  Merely plugging the leak without adjusting connectivity guarantees a dead graph.
+- **The Leak (fixed)**: `p_selfrep` could assign a product shorter than
+  `min_cat_len` as its own catalyst. Now self-rep requires
+  `len(PA) >= min_cat_len`; short products fall through to the
+  kin/random draw.
+- **The Graph Collapse — corrected, stronger result**: `min_cat_len >= 3`
+  is not merely unlikely to form RAFs — under elongation-only chemistry
+  it is **structurally impossible**. RAF closure starts from food
+  (monomers + activated monomers); the first producible polymer is a
+  dimer, but the dimer channel's catalyst must have length $\ge 3$,
+  which cannot be in the closure. Catch-22: 0/10 was an understatement
+  — it is 0/$\infty$. Neither self-rep loops (product must already be
+  in the closure) nor ligation (needs two polymers) can break it.
+  **Consequence: `min_cat_len = 2` is the only viable catalyst-length
+  floor in this chemistry; higher values are vacuous, not strict.**
+- **Multiplicity (implemented)**: `n_cat_max` / `p_multi` add extra
+  catalyst slots per catalyzed channel (same nested policy,
+  deduplicated; `n_cat_max=1` reproduces the old ensemble
+  bit-for-bit modulo the params record). Measured RAF frequency at
+  `min_cat_len=2`, $p_{\text{cat}}=0.5$: 5/10 $\to$ 7/10 with
+  `n_cat_max=3, p_multi=0.5` — a modest density boost, not a rescue;
+  the deeper limit is the single-catalyst-per-channel × food-reachability
+  structure, not slot count alone.
 
 ### Knob B: Sequence-Selective Catalysis ($p_{\text{info}}$) for Heredity
 
@@ -630,12 +643,18 @@ pairwise `center_distances` matrix so borderline merges are auditable.
   - `control_axis` block: `{param, direction, label}` in the protocol
     drives `rec["control"]` (sign, axis, label); legacy
     `control_negate` still honored.
-- [ ] **Step 2: Catalytic Multiplicity & Lineage-Biased ICs**:
-  - Plug the self-rep length leak in `generators.py`.
-  - Add catalytic multiplicity (`n_catalysts > 1`) to prevent the $0/10$ RAF graph collapse.
-  - Add $A$-biased and $B$-biased seeds to `_ic_bank` in `measure.py`.
-  - Enable $p_{\text{info}}$ to preserve multistability in $L \ge 4$ pools.
-  - Map the structural percolation landscape: RAF frequency vs. $(p_{\text{cat}}, \text{min\_cat\_len})$.
+- [x] **Step 2: Catalytic Multiplicity & Lineage-Biased ICs** *(implemented)*:
+  - ~~Self-rep length leak~~ → `pick_catalyst` requires
+    `len(PA) >= min_cat_len` for self-rep; `min_cat_len >= 3` shown to be
+    *structurally impossible* under elongation-only chemistry (see Knob A).
+  - ~~Catalytic multiplicity~~ → `n_cat_max` / `p_multi` generator params;
+    measured RAF frequency 5/10 → 7/10 at $(p_{\text{cat}}=0.5,
+    \text{min\_cat\_len}=2)$ — modest boost, not a rescue.
+  - ~~Lineage-biased ICs~~ → `_ic_bank` adds one seed per letter seeding
+    species where that letter is $\ge 2/3$ of composition.
+  - *Remaining (empirical)*: does $p_{\text{info}}$ preserve
+    multistability in $L \ge 4$ pools? Needs a dedicated sweep — the
+    biased ICs are now in place to detect it if present.
 - [ ] **Step 3: Small-Ensemble Driver & Emergence Scans ($N=3$)**:
   - Sweep $\Delta\mu$ and $\kappa$ at fixed $D$ under both $\varepsilon = 0$ (maintenance) and $\varepsilon > 0$ (emergence).
   - Execute two-stage sweeps (Scout $\to$ Zoom) to resolve the transition zone.

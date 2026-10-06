@@ -352,10 +352,15 @@ def _assembly_sig(net: ReactionNetwork, x: np.ndarray,
 
 def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,
              ic_scales=(1e-3, 5e-2, 0.5)) -> list[np.ndarray]:
-    """Deterministic IC bank: food-only + dense + sparse random draws.
+    """Deterministic IC bank: food-only + dense + lineage-biased +
+    sparse random draws.
 
     Sparse seeds can sit below the p>=2 separatrix; the bank mixes
-    scales so both basin structures are probed.
+    scales so both basin structures are probed. Lineage-biased seeds
+    (one per letter, species where that letter is >= 2/3 of the
+    composition) probe lineage-basin boundaries that random sparse
+    seeds can miss — they are how p_info's heredity-protecting claim
+    gets tested rather than assumed.
     """
     rng = np.random.default_rng(derive_seed(seed_key + "|icbank"))
     nonfood = np.where(~net.is_food)[0]
@@ -363,7 +368,22 @@ def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,
     dense = net.food_inlet.copy()
     dense[nonfood] = 0.15
     ics.append(dense)
-    for k in range(n_ic - 2):
+    if net.structure is not None:
+        letters = sorted({s for s in net.structure.values()
+                          if isinstance(s, str) and len(s) == 1})
+        for letter in letters:
+            grp = np.array(
+                [i for i in nonfood
+                 if isinstance(net.structure.get(i), str)
+                 and len(net.structure[i]) > 1
+                 and net.structure[i].count(letter)
+                 / len(net.structure[i]) >= 2 / 3],
+                dtype=int)
+            if len(grp):
+                x = net.food_inlet.copy()
+                x[grp] = 0.08 * (0.5 + 0.5 * rng.random(len(grp)))
+                ics.append(x)
+    for k in range(max(0, n_ic - len(ics))):
         x = net.food_inlet.copy()
         scale = ic_scales[k % len(ic_scales)]
         size = max(2, int(rng.integers(2, min(12, len(nonfood) + 1))))

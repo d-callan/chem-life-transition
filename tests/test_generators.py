@@ -76,3 +76,29 @@ def test_roundtrip_serialization():
     net = polymer_network(alphabet_size=2, max_len=3, seed=9)
     back = ReactionNetwork.from_dict(net.to_dict())
     assert back.hash == net.hash
+
+
+def test_selfrep_respects_min_cat_len():
+    """A product shorter than min_cat_len may not catalyze its own
+    formation — no self-rep length leak."""
+    net = polymer_network(alphabet_size=2, max_len=4, seed=0,
+                          p_cat=1.0, p_selfrep=1.0, min_cat_len=3)
+    assert any(ch.catalysts for ch in net.channels)
+    for ch in net.channels:
+        for c in ch.catalysts:
+            assert len(net.species[c]) >= 3
+
+
+def test_catalytic_multiplicity():
+    """n_cat_max/p_multi add extra catalyst slots; defaults preserve the
+    single-catalyst channel list exactly."""
+    net = polymer_network(alphabet_size=2, max_len=3, seed=5,
+                          p_cat=1.0, n_cat_max=3, p_multi=1.0)
+    assert any(len(ch.catalysts) > 1 for ch in net.channels)
+    for ch in net.channels:
+        assert len(set(ch.catalysts)) == len(ch.catalysts)
+    a = polymer_network(alphabet_size=2, max_len=3, seed=6)
+    b = polymer_network(alphabet_size=2, max_len=3, seed=6,
+                        n_cat_max=1, p_multi=0.0)
+    assert [ch.catalysts for ch in a.channels] == \
+           [ch.catalysts for ch in b.channels]

@@ -32,9 +32,17 @@ Food inlet (concentrations, strictly mass-conserving across sweeps):
 Catalyst assignment (per elongation channel, latent-score design so that
 p_cat / p_selfrep / p_info sweeps nest rather than reshuffle):
   u < p_cat            -> channel is catalyzed
-  v < p_selfrep        -> catalyst is the product PA itself
+  v < p_selfrep AND len(PA) >= min_cat_len
+                       -> catalyst is the product PA itself (a product
+                          shorter than min_cat_len may NOT self-catalyze
+                          — no length leak)
   else w < p_info      -> catalyst shares sequence with PA (sub/superstring)
   else                 -> random polymer of length >= min_cat_len
+
+Catalytic multiplicity: a catalyzed channel gets 1 + extra catalyst
+slots (up to n_cat_max total), each extra occupied w.p. p_multi under
+the same nested policy, deduplicated. n_cat_max=1 / p_multi=0 preserves
+the single-catalyst ensemble bit-for-bit.
 """
 
 from __future__ import annotations
@@ -63,6 +71,8 @@ def polymer_network(
     p_selfrep: float = 0.3,
     p_info: float = 0.7,
     min_cat_len: int = 2,
+    n_cat_max: int = 1,
+    p_multi: float = 0.0,
     delta_mu: float = 4.0,
     chi: float = 1.0,
     f_inlet: float = 1.0,
@@ -129,7 +139,8 @@ def polymer_network(
         food_inlet[index[a]] = (1.0 - chi) * f_inlet / alphabet_size
 
     # deterministic per-channel latent scores: seed -> one rng; arrays drawn
-    # in a fixed order so p_cat/p_selfrep/p_info sweeps nest.
+    # in a fixed order so p_cat/p_selfrep/p_info sweeps nest. Multiplicity
+    # draws come last so n_cat_max=1 networks are bit-identical to before.
     rng = np.random.default_rng(seed)
     n_elong = sum(
         alphabet_size for L in range(1, max_len)
@@ -139,6 +150,11 @@ def polymer_network(
     u_self = rng.random(n_elong)
     u_info = rng.random(n_elong)
     u_kin = rng.random(n_elong)
+    m_extra = max(0, n_cat_max - 1)
+    u_multi = rng.random((n_elong, m_extra))
+    u_self2 = rng.random((n_elong, m_extra))
+    u_info2 = rng.random((n_elong, m_extra))
+    u_kin2 = rng.random((n_elong, m_extra))
 
     candidates = [
         index[s]
@@ -146,6 +162,24 @@ def polymer_network(
         if len(s) >= min_cat_len
     ]
     cand_strings = [s for s in strings if len(s) >= min_cat_len]
+
+    def pick_catalyst(u_s: float, u_i: float, u_k: float,
+                      PA: str, iPA: int) -> int:
+        """One catalyst slot under the nested self/kin/random policy.
+
+        Self-rep requires len(PA) >= min_cat_len — a product shorter than
+        the catalyst threshold may not catalyze its own formation
+        (otherwise min_cat_len has a self-rep leak)."""
+        if u_s < p_selfrep and len(PA) >= min_cat_len:
+            return iPA
+        if u_i < p_info:
+            kin = [
+                index[s] for s in cand_strings
+                if s != PA and (PA in s or s in PA)
+            ]
+            if kin:
+                return kin[int(u_k * len(kin))]
+        return candidates[int(u_k * len(candidates))]
 
     channels: list[Channel] = []
     e = 0
@@ -162,21 +196,18 @@ def polymer_network(
                 k_r = k_lig * np.exp(dG)
                 cats: tuple[int, ...] = ()
                 if u_cat[e] < p_cat and candidates:
-                    if u_self[e] < p_selfrep:
-                        cats = (iPA,)
-                    elif u_info[e] < p_info:
-                        kin = [
-                            index[s] for s in cand_strings
-                            if s != PA and (PA in s or s in PA)
-                        ]
-                        if kin:
-                            cats = (kin[int(u_kin[e] * len(kin))],)
-                        else:
-                            cats = (
-                                candidates[int(u_kin[e] * len(candidates))],
-                            )
-                    else:
-                        cats = (candidates[int(u_kin[e] * len(candidates))],)
+                    cat_list = [pick_catalyst(u_self[e], u_info[e],
+                                              u_kin[e], PA, iPA)]
+                    # catalytic multiplicity: extra slots each occupied
+                    # w.p. p_multi, same assignment policy, deduplicated
+                    for m in range(m_extra):
+                        if u_multi[e, m] < p_multi:
+                            c = pick_catalyst(u_self2[e, m],
+                                              u_info2[e, m],
+                                              u_kin2[e, m], PA, iPA)
+                            if c not in cat_list:
+                                cat_list.append(c)
+                    cats = tuple(cat_list)
                 channels.append(Channel(
                     reactants=tuple(sorted(((iP, 1), (iA, 1)))),
                     products=tuple(sorted(((iPA, 1), (iW, 1)))),
@@ -227,6 +258,7 @@ def polymer_network(
             alphabet_size=alphabet_size, max_len=max_len,
             p_cat=p_cat, p_selfrep=p_selfrep, p_info=p_info,
             min_cat_len=min_cat_len,
+            n_cat_max=n_cat_max, p_multi=p_multi,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
             kappa=kappa, cat_power=cat_power, g_bond=g_bond,
             k_lig=k_lig, k_hyd=k_hyd, k_deact=k_deact,
