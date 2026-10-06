@@ -43,6 +43,33 @@ def _undefined(reason: str) -> dict:
     return {"value": None, "defined": False, "reason": reason}
 
 
+def _basin_block(ms: dict | None, key: str) -> dict | None:
+    """Basin-conditioned observable: per-attractor values + declared
+    scalar reductions.
+
+    O_maint/O_assembly's `value` reads whichever basin the reactor's
+    policy seed landed in; `multistability.per_attractor_obs` (written
+    by measure_run) evaluates the same observable on EVERY certified
+    attractor center. Reductions: `max` (best-organized basin) and
+    `basin_weighted_mean` (weighted by IC count per cluster — a
+    basin-volume proxy from the multi-IC scan).
+    """
+    pao = (ms or {}).get("per_attractor_obs")
+    if not pao:
+        return None
+    members = ms.get("members") or {}
+    w = np.array([float(members.get(str(o["attractor"]),
+                                    members.get(o["attractor"], 1)))
+                  for o in pao])
+    w = w / w.sum() if w.sum() > 0 else np.full(len(pao), 1 / len(pao))
+    vals = np.array([o[key] for o in pao], dtype=float)
+    return {"per_attractor": {str(o["attractor"]): float(v)
+                              for o, v in zip(pao, vals)},
+            "reductions": {"max": float(vals.max()),
+                           "basin_weighted_mean": float(w @ vals)},
+            "weight_rule": "ic_count_per_cluster"}
+
+
 def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
     """Extract the six-observable vector from a measure_run record.
 
@@ -50,6 +77,7 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
     the composition matrix; records already carry precomputed values.
     """
     out: dict = {}
+    ms = rec.get("multistability")
 
     # ---- O_raf: structural RAF coverage -------------------------
     st = rec.get("structural")
@@ -71,7 +99,10 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
         else:
             mpoly = None
         out["O_maint"] = ({"value": mpoly, "defined": mpoly is not None,
-                           "kind": "continuous"}
+                           "kind": "continuous",
+                           **({"basin": b}
+                              if (b := _basin_block(ms, "m_poly"))
+                              else {})}
                           if mpoly is not None else
                           _undefined("equilibrium present but no mass"))
     elif det.get("status") in ("OSCILLATORY", "UNRESOLVED", "RUNAWAY"):
@@ -93,7 +124,6 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
         out["O_persist"] = _undefined("no stochastic block")
 
     # ---- O_hered: attractor diversity ---------------------------
-    ms = rec.get("multistability")
     if ms is not None:
         out["O_hered"] = {
             "value": max(0, ms["n_attractors"] - 1), "defined": True,
@@ -134,7 +164,10 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
                 "defined": True, "kind": "continuous",
                 "a_cut": sig["a_cut"], "mass_floor": sig["mass_floor"],
                 "n_signature": sig["n_signature"],
-                "pool_ma_max": sig["pool_ma_max"]}
+                "pool_ma_max": sig["pool_ma_max"],
+                **({"basin": b}
+                   if (b := _basin_block(ms, "mass_signature_abs"))
+                   else {})}
         else:
             out["O_assembly"] = {
                 "value": sig.get("mass_signature"),

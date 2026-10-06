@@ -267,6 +267,7 @@ def measure_run(task: dict) -> dict:
                                    t_max=float(mspec.get(
                                        "t_max", reactor.get(
                                            "t_max", 200.0))))
+        _add_per_attractor_obs(net, ms, task)
         rec["multistability"] = ms
     else:
         rec["multistability"] = None
@@ -288,6 +289,7 @@ def measure_run(task: dict) -> dict:
                 n_ic=int(cspec.get("n_ic", 16)),
                 min_mass=float(cspec.get("min_mass", 0.01)),
                 t_max=float(cspec.get("t_max", 200.0)))
+            _add_per_attractor_obs(net, ms_block, task)
             rec["multistability"] = ms_block
         rec["competition"] = _competition_block(
             net, dilution, eps, seed_key, ms_block, cspec)
@@ -612,6 +614,27 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
                 heredity.attractor_signature(net, x)))]
             for c, x in centers_x.items()},
     }
+
+
+def _add_per_attractor_obs(net: ReactionNetwork, ms: dict,
+                           task: dict) -> None:
+    """Basin-conditioned observables: evaluate m_poly and the assembly
+    signature on EACH certified attractor center, not just whichever
+    basin the reactor's policy seed landed in. Closes the
+    basin-conditioning gap where O_maint/O_assembly read only the
+    primary integration endpoint while O_hered uses the full IC scan.
+    """
+    obs = []
+    for cid, x0 in sorted(ms.get("attractor_x0", {}).items(),
+                          key=lambda kv: int(kv[0])):
+        x = np.asarray(x0, float)
+        sig = _assembly_sig(net, x, task)
+        obs.append({"attractor": int(cid),
+                    "m_poly": float(_nonfood_mass(net, x)),
+                    "mass_signature_abs": sig["mass_signature_abs"],
+                    "mass_signature_frac": sig["mass_signature_frac"],
+                    "n_signature": sig["n_signature"]})
+    ms["per_attractor_obs"] = obs
 
 
 def _competition_block(net: ReactionNetwork, dilution: float,

@@ -117,7 +117,20 @@ coincidence was accidental, not co-critical.
 | **Class B-Scale: Finite-Size** | `O_persist` | Finite-volume stochastic realization of `O_maint`. Evaluated across $V \in [16, 1024]$ for finite-size scaling; not pooled as an independent biological axis. |
 | **Class C: Conditional State** | `O_select` | **Evaluated only where $O_{\text{hered}} > 0$**. Evaluates lineage asymmetry on the multistable island. Dropped from global $\lambda_c$ curve fitting. |
 
-### Basin-Conditioned Observables (verified defect)
+### Basin-Conditioned Observables (resolved)
+
+*Was a verified defect — fixed.* `multistability.per_attractor_obs`
+now evaluates `m_poly` and the absolute assembly signature on EVERY
+certified attractor center (from `attractor_x0`), and `life_vector`
+exposes it under `O_maint["basin"]` / `O_assembly["basin"]` with
+declared reductions `max` and `basin_weighted_mean` (weights = IC
+count per cluster — a basin-volume proxy). `value` still reads the
+policy-seeded endpoint for backward compatibility. First use already
+matters: on a 3-attractor net only the dominant-basin attractor
+carried signature mass (0.025 vs 0.0) — the basin block makes that
+dependence explicit instead of hidden.
+
+*Original defect, for the record:*
 
 `O_maint` and `O_assembly` are computed from the `equilibrium` block of a
 **single** `integrate_cstr` run under one `x0_policy` — while `O_hered`
