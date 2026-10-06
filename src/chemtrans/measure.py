@@ -27,7 +27,7 @@ from .networks.generators import polymer_network
 from .networks import benchmarks as bench
 from .dynamics import gillespie, ode
 from .observables import assembly, closure, heredity, spectral
-from .provenance import run_id, strict_jsonable
+from .provenance import run_id, sha256_json, strict_jsonable
 
 
 def derive_seed(seed_key: str) -> int:
@@ -89,6 +89,18 @@ def measure_run(task: dict) -> dict:
         "eps": eps,
         "seed_key": seed_key,
         "net_hash": net.hash,
+        # family = the latent topology: the resolved generator seed plus
+        # pool-defining params. Sweeping thresholds/energies (p_cat,
+        # delta_mu, kappa, ...) masks the same latent draws and keeps
+        # the family; changing the pool (alphabet_size, max_len,
+        # ligation) does not.
+        "family_id": seed_key + "|" + sha256_json({
+            "kind": gen_spec.get("kind", "polymer"),
+            "seed": gen_spec["seed"],
+            "alphabet_size": gen_spec.get("alphabet_size"),
+            "max_len": gen_spec.get("max_len"),
+            "ligation": gen_spec.get("ligation", False),
+        })[:12],
         "n_species": net.n_species,
         "n_channels": net.n_channels,
         "n_catalyzed_channels": int(sum(bool(c.catalysts)

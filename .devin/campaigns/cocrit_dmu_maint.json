@@ -1,0 +1,49 @@
+{
+  "name": "cocrit_dmu_maint",
+  "experiment": "cocriticality_dmu_maintenance_eps0",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 4,
+      "alphabet_size": 2,
+      "p_cat": 0.6,
+      "p_info": 0.7,
+      "p_selfrep": 0.3,
+      "ligation": true,
+      "n_cat_max": 3,
+      "p_multi": 0.5,
+      "chi": 0.7,
+      "kappa": 500.0,
+      "cat_power": 2
+    },
+    "eps": 0.0,
+    "assembly": {"mass_floor": 0.01},
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.3,
+      "t_max": 600.0,
+      "x0_policy": "dense",
+      "multistability": {"n_ic": 16, "min_mass": 0.01, "t_max": 600.0}
+    },
+    "stochastic": {
+      "enabled": true,
+      "replicates": 4,
+      "volume": 64,
+      "t_max": 300.0,
+      "max_events": 2000000,
+      "theta_organized": 0.1,
+      "mass_floor": 0.01,
+      "x0_from": "reactor"
+    }
+  },
+  "sweeps": [
+    {"param": "generator.delta_mu",
+     "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0]}
+  ],
+  "control_axis": {"param": "generator.delta_mu",
+                   "direction": "pos", "label": "delta_mu"},
+  "n_networks": 3,
+  "order_parameter": "equilibrium.m_poly",
+  "summarize_mode": "cocriticality",
+  "out_dir": "data/validation"
+}

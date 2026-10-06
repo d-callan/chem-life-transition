@@ -179,3 +179,19 @@ def test_conditional_observable_never_fit():
     assert rep["family_estimates"]["O_select"] == {}
     assert rep["pairwise"]["O_maint|O_select"]["verdict"] == \
         "incomparable"
+
+
+def test_family_id_latent_topology():
+    """family_id = latent topology: stable across threshold/energy
+    sweeps (p_cat, delta_mu), splits on pool changes (max_len)."""
+    base = {"kind": "polymer", "max_len": 4, "alphabet_size": 2,
+            "p_cat": 0.5, "delta_mu": 4.0}
+    t = lambda **kw: measure_run({
+        "generator": dict(base, **kw), "seed_key": "fam|n0",
+        "reactor": {"type": "structural"}})
+    a, b = t(p_cat=0.3), t(p_cat=0.9)
+    c = t(delta_mu=2.0)
+    d = t(max_len=5)
+    assert a["family_id"] == b["family_id"] == c["family_id"]
+    assert a["family_id"] != d["family_id"]
+    assert a["net_hash"] != b["net_hash"]   # content differs, family same

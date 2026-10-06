@@ -120,10 +120,11 @@ def _task_record(task_entry: dict) -> dict:
     rec = measure_run(task_entry["task"])
     rec["sweep"] = task_entry["sweep"]
     rec["net_replicate"] = task_entry["net_replicate"]
-    # family_id pairs the latent seed identity with network content:
-    # dynamical sweeps keep it fixed; generator sweeps change net_hash
-    # and therefore produce distinct families that are never paired.
-    rec["family_id"] = f"{task_entry['seed_key']}|{rec['net_hash']}"
+    # measure_run emits family_id = latent topology id (seed + pool-
+    # defining params): dynamical AND generator-threshold sweeps stay
+    # paired; pool changes (alphabet_size/max_len/ligation) split it.
+    rec.setdefault("family_id",
+                   f"{task_entry['seed_key']}|{rec['net_hash']}")
     return rec
 
 
