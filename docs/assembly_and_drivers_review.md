@@ -672,9 +672,17 @@ pairwise `center_distances` matrix so borderline merges are auditable.
   - ~~**Fragment ligation (Knob E)**~~ *(implemented)*: `ligation=True`
     adds $P_1+P_2 \rightleftharpoons P_1P_2$ channels — MA is now a
     kinetic-distance measure, not just a compressibility proxy.
-  - **Null-derived $A_{\text{cut}}$**: measure $(c, r)$ from a
-    $\kappa=0$/eps-only null run, solve $V c r^L 2^{-L} < 1$ for $L^*$,
-    record derivation in the manifest.
+  - ~~**Null-derived $A_{\text{cut}}$**~~ *(implemented)*:
+    `assembly.derive_a_cut` fits $M_L^{\text{null}} \sim c\,r^L$ to the
+    length spectrum of a $\kappa=0$/ε-only run and solves
+    $V c r^L |\Sigma|^{-L} < \texttt{copies\_floor}$ for $L^*$;
+    `a_cut = L^* - 2`. Enable per-run with `assembly.derive_cut` (+ optional
+    `volume`, `copies_floor`) — the full derivation lands in
+    `rec["assembly_calibration"]`. **Verified edge:** at
+    $\kappa=0,\ \varepsilon=10^{-3},\ V=100$ the null is so dilute
+    ($r\approx0.003$) that $L^*=2 \Rightarrow a_{\text{cut}}=0$ — the
+    record flags `"vacuous": true`; a resolvable threshold needs larger
+    V or abiotic rate.
   - Add a serial-dilution (`sd_map`) persistence protocol for the
     propagation question.
 

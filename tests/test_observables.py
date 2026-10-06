@@ -2,6 +2,7 @@
 region state, survival estimators, compositional signatures."""
 
 import numpy as np
+import pytest
 
 from chemtrans.networks.core import Channel, ReactionNetwork
 from chemtrans.networks.generators import polymer_network
@@ -167,3 +168,28 @@ def test_assembly_signature_explicit_cut():
     for r in sig["species"]:
         if r["estimator"] == "bound":
             assert not r["high_assembly"]
+
+
+def test_derive_a_cut_synthetic():
+    """Known null: M_L = 10*0.9^L, V=100, binary ->
+    E[L]=1000*0.45^L crosses 1 at L*=9, a_cut=7, extrapolated."""
+    lm = {L: 10 * 0.9 ** L for L in range(1, 7)}
+    rec = assembly.derive_a_cut(lm, volume=100.0, alphabet_size=2)
+    assert rec["c"] == pytest.approx(10.0, rel=1e-6)
+    assert rec["r"] == pytest.approx(0.9, rel=1e-6)
+    assert rec["L_star"] == 9
+    assert rec["a_cut"] == 7
+    assert rec["extrapolated"] and not rec["vacuous"]
+
+
+def test_derive_a_cut_vacuous():
+    """A null too dilute to resolve any specific string must flag
+    vacuous rather than return a permissive cut."""
+    lm = {2: 1e-4, 3: 1e-7, 4: 1e-10}
+    rec = assembly.derive_a_cut(lm, volume=10.0, alphabet_size=2)
+    assert rec["a_cut"] <= 0 and rec["vacuous"]
+
+
+def test_derive_a_cut_insufficient_data():
+    rec = assembly.derive_a_cut({2: 0.0, 3: 1e-9}, volume=10.0)
+    assert rec["a_cut"] is None and "reason" in rec

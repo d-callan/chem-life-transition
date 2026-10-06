@@ -18,10 +18,15 @@ strings via memoized search; for len > `exact_limit` an explicit upper
 bound (len-1) is returned with `estimator="bound"` so downstream code
 can never silently treat a bound as a measurement.
 
-Signature criterion (per plan): a species only counts toward the
-assembly-complexity signature if it is BOTH high-assembly (a > null
-quantile for its length) AND high-abundance (mass fraction above the
-calibrated abundance floor). Either condition alone is diagnostic only.
+Signature criterion: a species counts toward the assembly-complexity
+signature iff its EXACT assembly index is >= `a_cut` AND its absolute
+monomer-mass concentration is >= `mass_floor` — see
+`assembly_signature_absolute`. `a_cut` is either explicit, derived from
+the pool's maximal exact class, or derived from a measured abiotic null
+(`derive_a_cut`): under a sequence-blind null each length-L string is
+equiprobable, so the expected copy number of any specific string is
+V * M_L^null * |Sigma|^{-L} with M_L^null ~ c*r^L; the cut is set where
+that expectation falls below one copy.
 """
 
 from __future__ import annotations
@@ -185,3 +190,94 @@ def assembly_signature_absolute(
             "pool_ma_dist": dist["counts"], "n_pool_bound": dist["n_bound"],
             "n_signature": n_sig, "mass_signature_abs": mass_sig,
             "mass_signature_frac": mass_sig_frac}
+
+
+def length_mass_spectrum(net, x: np.ndarray) -> dict[int, float]:
+    """{length: absolute nonfood monomer-mass concentration} — the
+    length-resolved spectrum needed for the null fit. Requires
+    net.structure (species labels)."""
+    comp_mass = net.comp.sum(axis=0)
+    out: dict[int, float] = {}
+    for i in range(net.n_species):
+        if net.is_food[i]:
+            continue
+        lab = net.structure.get(i) if net.structure is not None else None
+        if not isinstance(lab, str):
+            continue
+        L = len(lab)
+        out[L] = out.get(L, 0.0) + float(comp_mass[i] * x[i])
+    return dict(sorted(out.items()))
+
+
+def derive_a_cut(length_masses: dict[int, float], volume: float,
+                 alphabet_size: int = 2, copies_floor: float = 1.0,
+                 ma_to_length: int = 2, max_L: int = 64) -> dict:
+    """Null-derived assembly cut (the toy Walker analogue).
+
+    Under a sequence-blind abiotic null, each length-L string is
+    equiprobable (P = alphabet_size^{-L}), so the expected copy number of
+    any specific string is
+
+        E[n_s] = volume * M_L^null * alphabet_size^{-L}
+
+    with M_L^null ~ c * r^L fit by log-linear regression on the measured
+    length spectrum.  L* is the first length with E < copies_floor, and
+
+        a_cut = L* - ma_to_length
+
+    (binary strings empirically reach max MA ~ L-2; the offset converts
+    the length threshold into an index threshold).
+
+    Returns a derivation record suitable for a campaign manifest:
+    c, r, L_star, a_cut, per-length expected copies, plus `extrapolated`
+    (L* beyond the measured range) and `reason` when the fit is
+    impossible. The cut is only as good as the null: if the null becomes
+    sequence-dependent, alphabet_size^{-L} must be replaced by the
+    measured P_null(s) and this derivation redone.
+    """
+    Ls = np.array(sorted(length_masses), dtype=float)
+    Ms = np.array([length_masses[int(L)] for L in Ls], dtype=float)
+    pos = Ms > 0
+    rec = {"volume": float(volume), "alphabet_size": int(alphabet_size),
+           "copies_floor": float(copies_floor),
+           "ma_to_length": int(ma_to_length),
+           "measured_spectrum": {str(int(L)): float(m)
+                                 for L, m in zip(Ls, Ms)},
+           "n_lengths_fit": int(pos.sum())}
+    if pos.sum() < 2:
+        rec.update({"a_cut": None, "L_star": None,
+                    "reason": "fewer than two nonzero length classes in "
+                              "the null spectrum"})
+        return rec
+    slope, intercept = np.polyfit(Ls[pos], np.log(Ms[pos]), 1)
+    r, c = float(np.exp(slope)), float(np.exp(intercept))
+    rec["c"], rec["r"] = c, r
+
+    # expected specific-copy number vs length; first L below the floor
+    expected = {}
+    L_star = None
+    for L in range(1, max_L + 1):
+        e = volume * c * r ** L * alphabet_size ** (-L)
+        expected[str(L)] = float(e)
+        if e < copies_floor:
+            L_star = L
+            break
+    if L_star is None:
+        rec.update({"a_cut": None, "L_star": None,
+                    "expected_copies": expected,
+                    "reason": "expected copies never fall below the "
+                              "floor within max_L"})
+        return rec
+    a_cut = int(L_star - ma_to_length)
+    rec.update({
+        "L_star": int(L_star), "a_cut": a_cut,
+        "expected_copies": expected,
+        "extrapolated": bool(L_star > Ls.max()),
+        # a_cut <= 0: the null is so dilute that no specific string is
+        # resolvable at this volume — the signature is vacuous, not
+        # permissive. Increase V or the abiotic rate before interpreting.
+        "vacuous": bool(a_cut <= 0),
+        "derivation": ("L* = first L with V*c*r^L*|Sigma|^-L < "
+                       "copies_floor; a_cut = L* - ma_to_length"),
+    })
+    return rec

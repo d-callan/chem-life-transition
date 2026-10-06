@@ -163,6 +163,15 @@ def measure_run(task: dict) -> dict:
                 "assembly_signature": _assembly_sig(net, x, task),
                 "x_eq": x,
             }
+            a_spec = (task.get("assembly") or {})
+            if a_spec.get("derive_cut"):
+                vol = float(a_spec.get(
+                    "volume",
+                    (task.get("stochastic") or {}).get("volume", 1.0)))
+                rec["assembly_calibration"] = assembly.derive_a_cut(
+                    assembly.length_mass_spectrum(net, x), vol,
+                    alphabet_size=int(net.params.get("alphabet_size", 2)),
+                    copies_floor=float(a_spec.get("copies_floor", 1.0)))
         else:
             x = det.x[-1]
             obs = closure.phi_decomposition(net, x, eps)
