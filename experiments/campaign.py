@@ -367,6 +367,57 @@ def cmd_summarize(args):
                        "transition_fit")}, indent=2))
 
 
+def cmd_zoom(args):
+    """Scout->Zoom: read a campaign summary, bracket the detected
+    critical region, and emit a refined-grid protocol.
+
+    Uses the per-family λc estimates in summary['cocriticality']
+    (all observables pooled): the zoom range is
+    [min(lc) - pad, max(lc) + pad] in CONTROL units, then mapped back
+    to raw sweep units via the control-axis direction. Per-family
+    heterogeneity widens the window rather than picking one family's
+    transition — correct for a paired re-measurement.
+    """
+    mdir = Path(args.manifest).parent
+    manifest = json.loads(Path(args.manifest).read_text())
+    summary = json.loads((mdir / "summary.json").read_text())
+    proto = manifest["protocol"]
+    ax = proto.get("control_axis") or {}
+    param = ax.get("param") or proto["sweeps"][0]["param"]
+    direction = ax.get("direction") or "identity"
+
+    fam_ests = (summary.get("cocriticality") or {}).get(
+        "family_estimates") or {}
+    lcs = [e["lc"] for obs in fam_ests.values()
+           for e in obs.values()
+           if e.get("lc") is not None and not e.get("extrapolated")]
+    if not lcs:
+        raise SystemExit("zoom: no in-range family λc estimates — "
+                         "nothing to refine")
+    pad = float(args.pad)
+    lo, hi = min(lcs) - pad, max(lcs) + pad
+    n = int(args.n_points)
+    lam_zoom = np.linspace(lo, hi, n)
+    raw = (-lam_zoom if direction == "negate" else lam_zoom)
+    raw = np.sort(raw)
+
+    newp = json.loads(json.dumps(proto))
+    newp["name"] = proto["name"] + "_zoom"
+    for s in newp["sweeps"]:
+        if s["param"] == param:
+            s["values"] = [float(v) for v in raw]
+    newp["zoom_of"] = {"campaign": str(mdir),
+                       "lam_window": [float(lo), float(hi)],
+                       "lc_inputs": [float(v) for v in sorted(lcs)]}
+    out = Path(args.out or f"{proto['name']}_zoom.json")
+    out.write_text(json.dumps(newp, indent=2, sort_keys=True))
+    print(json.dumps({"protocol": str(out),
+                      "control": param,
+                      "lam_window": [float(lo), float(hi)],
+                      "n_lc_inputs": len(lcs),
+                      "values": [float(v) for v in raw]}, indent=2))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -384,6 +435,12 @@ def main():
     p.add_argument("--manifest", required=True)
     p.add_argument("--boot", type=int, default=400)
     p.set_defaults(fn=cmd_summarize)
+    p = sub.add_parser("zoom")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--n-points", type=int, default=9)
+    p.add_argument("--pad", type=float, default=0.25)
+    p.add_argument("--out")
+    p.set_defaults(fn=cmd_zoom)
     args = ap.parse_args()
     args.fn(args)
 
