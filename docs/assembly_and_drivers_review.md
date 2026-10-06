@@ -713,6 +713,17 @@ pairwise `center_distances` matrix so borderline merges are auditable.
     to crossovers (higher catalytic rate is NOT monotonically
     favorable); O_persist unmeasured (needs the SSA campaign on the
     resolved transition line).
+
+    **n=8 replication (decisive)**: the single-family `tracking` did
+    NOT generalize. At N=8, `O_maint|O_assembly` and `O_maint|O_hered`
+    report **`drift`**: coincidence at κ=100, mixed at κ=1500
+    (one family +0.72), separated at κ=500 (one family −0.65).
+    Reading: coincidence is *family-specific*, not universal — gated
+    collinearity in some networks, genuine separation in others. The
+    framework discriminated as designed. Also fixed: extrapolated λc
+    fits are now excluded from paired diffs (one out-of-grid fit had
+    poisoned a κ level). Remaining separations are ~1.5–1.8× grid
+    spacing — the `zoom` subcommand exists to resolve exactly these.
   - ~~Serial-dilution propagation protocol~~ *(implemented)*: the `sd`
     reactor now records per-cycle `m_poly_cycles`, `comp_dist_cycle`
     (cycle-to-cycle L1 signature drift — a stable lineage converges to

@@ -260,7 +260,9 @@ def coincidence_report(by_net: dict[str, list[dict]],
                      for f in fams
                      if f in per_fam[oj] and f in per_fam[ok]
                      and per_fam[oj][f].lc is not None
-                     and per_fam[ok][f].lc is not None}
+                     and per_fam[ok][f].lc is not None
+                     and not per_fam[oj][f].detail.get("extrapolated")
+                     and not per_fam[ok][f].detail.get("extrapolated")}
             n_pairs = len(diffs)
             entry = {"n_pairs": n_pairs,
                      "paired_diffs": {f: float(d)
