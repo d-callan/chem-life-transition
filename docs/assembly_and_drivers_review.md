@@ -724,6 +724,16 @@ pairwise `center_distances` matrix so borderline merges are auditable.
     fits are now excluded from paired diffs (one out-of-grid fit had
     poisoned a κ level). Remaining separations are ~1.5–1.8× grid
     spacing — the `zoom` subcommand exists to resolve exactly these.
+
+    **n=8 zoom (D ~0.10 spacing over [0.14,1.05])**: the drift
+    RESOLVED — all three comparable pairs `tracking` at a *tighter*
+    tol (0.20 vs scout 0.40), every diff within ±0.1 λ at all κ
+    levels. The coarse-grid separations were grid-snap artifacts (the
+    known discrete-vs-continuous resolution bias) plus out-of-window
+    fits. Caveats: the contributing family set shifts with κ (some
+    λc leave the window or go undefined at κ=1500), so the claim is
+    "coincidence wherever both observables are resolved", not "all 8
+    families share one locus"; O_persist still unmeasured.
   - ~~Serial-dilution propagation protocol~~ *(implemented)*: the `sd`
     reactor now records per-cycle `m_poly_cycles`, `comp_dist_cycle`
     (cycle-to-cycle L1 signature drift — a stable lineage converges to
