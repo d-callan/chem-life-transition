@@ -1,0 +1,94 @@
+{
+  "control_axis": {
+    "direction": "negate",
+    "label": "inv_dilution",
+    "param": "reactor.dilution"
+  },
+  "experiment": "cocriticality_2d_dilution_kappa",
+  "n_networks": 8,
+  "name": "cocrit_2d_dk_n8_zoom",
+  "order_parameter": "equilibrium.m_poly",
+  "out_dir": "data/validation",
+  "secondary_axis": "generator.kappa",
+  "summarize_mode": "cocriticality",
+  "sweeps": [
+    {
+      "param": "reactor.dilution",
+      "values": [
+        0.13733123030808314,
+        0.23848293664371178,
+        0.33963464297934065,
+        0.4407863493149695,
+        0.5419380556505984,
+        0.6430897619862271,
+        0.7442414683218559,
+        0.8453931746574848,
+        0.9465448809931136,
+        1.0476965873287423
+      ]
+    },
+    {
+      "param": "generator.kappa",
+      "values": [
+        100.0,
+        500.0,
+        1500.0
+      ]
+    }
+  ],
+  "task": {
+    "assembly": {
+      "mass_floor": 0.01
+    },
+    "eps": 0.0,
+    "generator": {
+      "alphabet_size": 2,
+      "cat_power": 2,
+      "chi": 0.7,
+      "delta_mu": 4.0,
+      "kind": "polymer",
+      "ligation": true,
+      "max_len": 4,
+      "n_cat_max": 3,
+      "p_cat": 0.6,
+      "p_info": 0.7,
+      "p_multi": 0.5,
+      "p_selfrep": 0.3
+    },
+    "reactor": {
+      "multistability": {
+        "min_mass": 0.01,
+        "n_ic": 16,
+        "t_max": 600.0
+      },
+      "t_max": 600.0,
+      "type": "cstr",
+      "x0_policy": "dense"
+    },
+    "stochastic": {
+      "enabled": false
+    }
+  },
+  "zoom_of": {
+    "campaign": "data/validation/cocrit_2d_dk_n8-7b010d2cbc2b",
+    "lam_window": [
+      -1.25,
+      0.06497218236317467
+    ],
+    "lc_inputs": [
+      -1.1,
+      -1.1,
+      -0.7358783505611883,
+      -0.451729606441047,
+      -0.43817696813261103,
+      -0.43221871958858293,
+      -0.3935442631620897,
+      -0.3832593851456253,
+      -0.37063712135207794,
+      -0.2,
+      -0.1,
+      -0.09031683214950954,
+      -0.08502781763682532
+    ]
+  }
+}

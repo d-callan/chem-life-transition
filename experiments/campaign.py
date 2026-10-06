@@ -400,6 +400,17 @@ def cmd_zoom(args):
     lam_zoom = np.linspace(lo, hi, n)
     raw = (-lam_zoom if direction == "negate" else lam_zoom)
     raw = np.sort(raw)
+    # clip to the original sweep's domain — sampling outside it is
+    # unconstrained extrapolation, and for physical axes like
+    # dilution can be outright invalid (D < 0)
+    orig = [float(v) for s in proto["sweeps"] if s["param"] == param
+            for v in s["values"]]
+    if orig:
+        raw = raw[(raw >= min(orig) - 1e-12)
+                  & (raw <= max(orig) + 1e-12)]
+    if len(raw) < 3:
+        raise SystemExit("zoom: refined grid <3 points inside the "
+                         "original sweep domain")
 
     newp = json.loads(json.dumps(proto))
     newp["name"] = proto["name"] + "_zoom"
