@@ -698,14 +698,21 @@ pairwise `center_distances` matrix so borderline merges are auditable.
     loop on net2 (organized to D≈1.0 up, reignites at D≈0.5 down,
     width ≈0.6). Transitions located this way are spinodals, not the
     coexistence point.
-  - ~~2-D perturbational scan ($D \times \kappa$)~~ *(implemented;
-    campaign running)*: `coincidence_2d` partitions records by the
-    secondary swept axis and asks whether each paired Δλc stays within
-    tol as that axis varies — verdicts `tracking` (coincidence
-    persists: shared critical locus) vs `drift` (lines separate: gated
-    collinearity at best) vs `separated_at_all_levels`/
+  - ~~2-D perturbational scan ($D \times \kappa$)~~ *(done, first
+    result)*: `coincidence_2d` partitions records by the secondary
+    axis and aggregates per-level paired diffs — verdicts `tracking`
+    (coincidence persists: shared critical locus) vs `drift` (gated
+    collinearity at best) / `separated_at_all_levels` /
     `underdetermined`; `lc_curves` gives per-family λc(secondary)
-    trajectories. Enabled via protocol `secondary_axis`.
+    trajectories. Campaign `cocrit_2d_dk` (3 nets × 8 D × 3 κ, ε=0,
+    deterministic only — SSA dropped for runtime): **all comparable
+    pairs report `tracking`** — maint|assembly, maint|hered,
+    assembly|hered coincide at κ=100 AND κ=500, consistent with a
+    shared critical locus rather than gated collinearity. Caveats:
+    only 1/3 families contributes pairs; κ=1500 degrades transitions
+    to crossovers (higher catalytic rate is NOT monotonically
+    favorable); O_persist unmeasured (needs the SSA campaign on the
+    resolved transition line).
   - ~~Serial-dilution propagation protocol~~ *(implemented)*: the `sd`
     reactor now records per-cycle `m_poly_cycles`, `comp_dist_cycle`
     (cycle-to-cycle L1 signature drift — a stable lineage converges to
