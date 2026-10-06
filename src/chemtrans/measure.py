@@ -240,6 +240,13 @@ def measure_run(task: dict) -> dict:
     else:
         rec["multistability"] = None
 
+    # ---- continuation / hysteresis sweep -------------------------
+    if reactor.get("continuation"):
+        rec["continuation"] = _continuation_block(
+            net, reactor, dilution, eps, x0_det)
+    else:
+        rec["continuation"] = None
+
     # ---- competition SSA (O_select context) ----------------------
     if reactor.get("competition"):
         cspec = reactor["competition"]
@@ -369,6 +376,78 @@ def _assembly_sig(net: ReactionNetwork, x: np.ndarray,
         net, np.asarray(x, float),
         a_cut=a.get("a_cut"),
         mass_floor=float(a.get("mass_floor", 0.01)))
+
+
+def _continuation_block(net: ReactionNetwork, reactor: dict,
+                        dilution: float, eps: float,
+                        x0_det: np.ndarray | None) -> dict:
+    """Forward/reverse warm-start sweep for hysteresis measurement.
+
+    reactor["continuation"] = {"param": "dilution"|"eps",
+                               "values": [...], "mass_floor": float}
+    Each point integrates from the previous point's endpoint; the rev
+    branch starts from the fwd branch's final state (true continuation).
+    Generator-param axes are not supported here — the network is fixed
+    inside a task; use a campaign sweep for those.
+
+    A "transition" is the first λ where organized status (m_poly >
+    mass_floor) flips relative to the branch's starting state. Folds
+    located this way are SPINODALS — the coexistence point needs the
+    stochastic/quasi-potential analysis; report width, not a single
+    'transition point'.
+    """
+    cont = reactor["continuation"]
+    param = cont["param"]
+    if param not in ("dilution", "eps"):
+        raise ValueError(
+            f"continuation param {param!r} unsupported "
+            "(only 'dilution' and 'eps' are integrator-level axes)")
+    values = [float(v) for v in cont["values"]]
+    floor = float(cont.get("mass_floor", 0.01))
+    t_max = float(cont.get("t_max", reactor.get("t_max", 200.0)))
+
+    branches = {}
+    x = (np.asarray(x0_det, float).copy() if x0_det is not None
+         else net.food_inlet.copy())
+    for direction, seq in (("fwd", values), ("rev", values[::-1])):
+        rows = []
+        for lam in seq:
+            kw = {"dilution": dilution, "eps": eps}
+            kw[param] = lam
+            r = ode.integrate_cstr(net, t_max=t_max, x0=x, **kw)
+            x = r.x_eq if r.converged else r.x[-1]
+            rows.append({"lam": lam,
+                         "status": r.trajectory_type,
+                         "m_poly": _nonfood_mass(net, x)})
+        branches[direction] = rows
+
+    out = {"param": param, "values": values, "mass_floor": floor,
+           "branches": branches}
+    transitions = {}
+    for direction in ("fwd", "rev"):
+        rows = branches[direction]
+        org = [row["m_poly"] > floor for row in rows]
+        base = org[0]
+        flips = [i for i, o in enumerate(org) if o != base]
+        if flips:
+            i = flips[0]
+            transitions[direction] = {
+                "lam": rows[i]["lam"],
+                "lc_lo": rows[i - 1]["lam"] if i else None,
+                "branch_started_organized": base}
+        else:
+            transitions[direction] = None
+    out["transitions"] = transitions
+    tf, tr = transitions["fwd"], transitions["rev"]
+    if tf and tr:
+        # fold pair located -> hysteresis window between the spinodals
+        out["hysteresis_width"] = abs(tf["lam"] - tr["lam"])
+        out["spinodal_fwd"], out["spinodal_rev"] = tf["lam"], tr["lam"]
+    else:
+        out["hysteresis_width"] = None
+        out["note"] = ("no fold pair located within the sweep; widen "
+                       "values or check mass_floor")
+    return out
 
 
 def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,

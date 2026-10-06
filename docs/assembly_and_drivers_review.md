@@ -661,30 +661,33 @@ pairwise `center_distances` matrix so borderline merges are auditable.
   - *Remaining (empirical)*: does $p_{\text{info}}$ preserve
     multistability in $L \ge 4$ pools? Needs a dedicated sweep — the
     biased ICs are now in place to detect it if present.
-- [ ] **Step 3: Small-Ensemble Driver & Emergence Scans ($N=3$)**:
-  - Sweep $\Delta\mu$ and $\kappa$ at fixed $D$ under both $\varepsilon = 0$ (maintenance) and $\varepsilon > 0$ (emergence).
-  - Execute two-stage sweeps (Scout $\to$ Zoom) to resolve the transition zone.
-  - Test forward/reverse continuation for hysteresis in $p=2$ networks.
-  - Test the **Gated Collinearity vs. Independent Co-Criticality** hypothesis across $(O_{\text{maint}}, O_{\text{hered}}, O_{\text{assembly}})$.
-  - **2-D perturbational scan (coarse $D \times \kappa$)**: the decisive
-    co-criticality test is whether $\Delta\lambda_c(\kappa) \approx 0$
-    persists across a second axis, not a single-axis coincidence.
-  - ~~**Fragment ligation (Knob E)**~~ *(implemented)*: `ligation=True`
-    adds $P_1+P_2 \rightleftharpoons P_1P_2$ channels — MA is now a
-    kinetic-distance measure, not just a compressibility proxy.
-  - ~~**Null-derived $A_{\text{cut}}$**~~ *(implemented)*:
-    `assembly.derive_a_cut` fits $M_L^{\text{null}} \sim c\,r^L$ to the
-    length spectrum of a $\kappa=0$/ε-only run and solves
-    $V c r^L |\Sigma|^{-L} < \texttt{copies\_floor}$ for $L^*$;
-    `a_cut = L^* - 2`. Enable per-run with `assembly.derive_cut` (+ optional
-    `volume`, `copies_floor`) — the full derivation lands in
-    `rec["assembly_calibration"]`. **Verified edge:** at
-    $\kappa=0,\ \varepsilon=10^{-3},\ V=100$ the null is so dilute
-    ($r\approx0.003$) that $L^*=2 \Rightarrow a_{\text{cut}}=0$ — the
-    record flags `"vacuous": true`; a resolvable threshold needs larger
-    V or abiotic rate.
-  - Add a serial-dilution (`sd_map`) persistence protocol for the
-    propagation question.
+- [~] **Step 3: Small-Ensemble Driver & Emergence Scans ($N=3$)** *(in progress)*:
+  - ~~Sweep $\Delta\mu$ at fixed $D$ under both regimes~~ *(done)*:
+    `cocrit_dmu_maint` (ε=0, dense) + `cocrit_dmu_emerge` (ε=10⁻³,
+    food-only), Δμ ∈ [0,8], N=3, ligation+multiplicity on.
+    **First results**: maintenance onsets at Δμ ≈ 1.4–2.5; on net2
+    $O_{\text{maint}}$ (2.51), $O_{\text{assembly}}$ (2.81) and the
+    $O_{\text{hered}}$ 2→3-attractor jump (3.0) co-localize within
+    `tol_pair` — consistent with gated collinearity, needs the 2-D test.
+    net1 shows `always_active` heredity: genuine kinetic bistability at
+    **Δμ = 0** (open CSTR, catalytic autocatalysis — not forbidden).
+    Emergence: $m_{\text{poly}} \approx 0.002$ flat at all Δμ — no de
+    novo organization at ε=10⁻³, consistent with the dilute null.
+    Discrete estimator upgraded: changepoint = first *change* from
+    baseline (catches 2→3 transitions), `always_active` reported;
+    continuous fits flag `extrapolated` λc outside the grid.
+  - ~~Forward/reverse continuation for hysteresis~~ *(implemented)*:
+    `reactor.continuation = {"param": "dilution"|"eps", "values", ...}`
+    warm-starts each point from the previous endpoint, rev from the fwd
+    endpoint; records per-branch series + spinodal pair +
+    `hysteresis_width`. **Verified**: ε=0 gives *infinite* width
+    (absorbing — rev branch never reignites); ε=0.01 gives a finite
+    loop on net2 (organized to D≈1.0 up, reignites at D≈0.5 down,
+    width ≈0.6). Transitions located this way are spinodals, not the
+    coexistence point.
+  - *Remaining*: two-stage Scout→Zoom sweeps; 2-D perturbational scan
+    ($D \times \kappa$, the decisive gated-collinearity test); κ axis
+    sweeps; serial-dilution (`sd_map`) propagation protocol.
 
 ### Phase 2: Workstation+ Engine (Tier 2 — dynamic range, not thresholds)
 - [ ] **Step 4: Sparse-ODE upgrade**:

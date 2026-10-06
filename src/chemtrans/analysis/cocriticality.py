@@ -112,7 +112,13 @@ def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
         detail["delta_aicc"] = _clean_aicc(fit["delta_aicc"])
-        return LcEstimate(float(params[key]), cls, detail)
+        lc = float(params[key])
+        # flag fits that extrapolate a critical point outside the
+        # sampled grid — on near-flat data the fitter can place lc far
+        # below/above the sweep, which is not a measurement
+        if lc < lam.min() or lc > lam.max():
+            detail["extrapolated"] = True
+        return LcEstimate(lc, cls, detail)
     return LcEstimate(None, "none" if sel == "null" else "crossover",
                       detail)
 
@@ -154,16 +160,27 @@ def estimate_lc_discrete(by_net_series: dict, active_pred,
 
 
 def _lc_discrete_family(lam: np.ndarray, y: np.ndarray) -> LcEstimate:
-    """Per-family changepoint: earliest λ where the observable is active."""
+    """Per-family changepoint: earliest λ where the value differs from
+    its baseline at the smallest swept λ.
+
+    This catches both 0->onset transitions AND structure changes
+    (e.g. n_attractors 2->3) that a simple y>0 threshold misses when the
+    observable is already active at the grid edge. A family whose value
+    never changes is 'always_active' (baseline > 0) or 'none'."""
     order = np.argsort(lam)
     lam, y = np.asarray(lam)[order], np.asarray(y)[order]
-    hits = np.nonzero(y > 0)[0]
-    if not len(hits):
-        return LcEstimate(None, "none", {})
-    i = int(hits[0])
+    y0 = y[0]
+    chg = np.nonzero(y != y0)[0]
+    if not len(chg):
+        return LcEstimate(
+            None, "always_active" if y0 > 0 else "none",
+            {"baseline": float(y0)})
+    i = int(chg[0])
     return LcEstimate(
         float(lam[i]), "discrete_changepoint",
-        {"lc_lo": float(lam[i - 1]) if i else None,
+        {"baseline": float(y0),
+         "new_value": float(y[i]),
+         "lc_lo": float(lam[i - 1]) if i else None,
          "lc_hi": float(lam[i + 1]) if i + 1 < len(lam) else None})
 
 
@@ -284,7 +301,9 @@ def coincidence_report(by_net: dict[str, list[dict]],
             matrix[f"{oj}|{ok}"] = entry
     return {
         "family_estimates": {
-            o: {f: {"lc": e.lc, "class": e.transition_class}
+            o: {f: {"lc": e.lc, "class": e.transition_class,
+                    **({"extrapolated": True}
+                       if e.detail.get("extrapolated") else {})}
                 for f, e in per_fam[o].items()}
             for o in observables},
         "point_estimates": {
