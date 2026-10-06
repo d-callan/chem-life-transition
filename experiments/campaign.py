@@ -131,7 +131,6 @@ def _task_record(task_entry: dict) -> dict:
 def cmd_validate(args):
     """E0-style validation: protocol sanity + thermodynamic/null checks."""
     protocol = load_protocol(Path(args.protocol))
-    from chemtrans.networks import core as core_mod
     report = {"protocol": protocol["name"], "checks": []}
     tasks = expand_tasks(protocol)
     nets = {}
