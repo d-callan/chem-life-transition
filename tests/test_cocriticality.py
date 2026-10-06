@@ -195,3 +195,53 @@ def test_family_id_latent_topology():
     assert a["family_id"] == b["family_id"] == c["family_id"]
     assert a["family_id"] != d["family_id"]
     assert a["net_hash"] != b["net_hash"]   # content differs, family same
+
+
+def _synthetic_2d(lc_by_level, n_nets=3):
+    """Fake 2-D records: hinge at lc that may shift per secondary level."""
+    recs = []
+    for j in range(n_nets):
+        for k in (0.0, 1.0):
+            for lam in np.arange(0.0, 4.5, 0.5):
+                lc_m = lc_by_level["O_maint"](k)
+                lc_a = lc_by_level["O_assembly"](k)
+                recs.append({
+                    "net_hash": f"net{j}",
+                    "family_id": f"fam{j}",
+                    "sweep": {"kappa": k},
+                    "control": {"lam": float(lam)},
+                    "life_vector": {
+                        "O_maint": {"defined": True,
+                                    "value": float(max(0, lam - lc_m))},
+                        "O_assembly": {"defined": True,
+                                       "value": float(max(0, lam - lc_a))},
+                        "O_hered": {"defined": True,
+                                    "value": int(lam >= lc_m)},
+                    }})
+    return recs
+
+
+def test_coincidence_2d_tracking_and_drift():
+    """Tracking: pinned diffs across levels. Drift: coincidence at
+    level 0 that separates at level 1 — the gated-collinearity tell."""
+    recs = _synthetic_2d({"O_maint": lambda k: 2.0,
+                          "O_assembly": lambda k: 2.0 + 1.5 * k})
+    rep = cc.coincidence_2d(recs, "kappa", n_boot=20, seed=0)
+    assert rep["status"] == "ok" and rep["n_levels"] == 2
+    # O_maint|O_hered pinned at 0 at both levels -> tracking
+    assert rep["pairwise_2d"]["O_maint|O_hered"]["verdict"] == "tracking"
+    # O_maint|O_assembly coincident at k=0, separated by 2 at k=1
+    ent = rep["pairwise_2d"]["O_maint|O_assembly"]
+    assert ent["verdict"] == "drift"
+    assert ent["n_levels_with_pairs"] == 2
+    # lc_curves record the per-family trajectory
+    assert "O_maint" in rep["lc_curves"]
+
+
+def test_coincidence_2d_needs_two_levels():
+    recs = _synthetic_2d({"O_maint": lambda k: 2.0,
+                          "O_assembly": lambda k: 2.0})
+    for r in recs:
+        r["sweep"] = {"kappa": 0.0}
+    rep = cc.coincidence_2d(recs, "kappa")
+    assert rep["status"] == "insufficient_levels"

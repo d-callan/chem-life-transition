@@ -317,3 +317,110 @@ def coincidence_report(by_net: dict[str, list[dict]],
                  "pooled fits; 'coincident*' is an equivalence verdict "
                  "inside tol_pair, not failure-to-reject"),
     }
+
+
+def coincidence_2d(records: list[dict], secondary_param: str,
+                   observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
+                   n_boot: int = 400, seed: int = 0) -> dict:
+    """Perturbational co-criticality over a SECOND swept axis.
+
+    The decisive gated-collinearity test: partition the records by the
+    value of `secondary_param` in each record's sweep dict, run the
+    per-family paired analysis at every level, and ask whether the
+    paired differences D_jk(fam; level) stay within tolerance as the
+    second axis varies. Coincidence at a single grid point can be
+    faked by gating (one observable's transition merely enables the
+    next); a coincidence that PERSISTS across a 2-D scan — transition
+    lines that move together or stay pinned — is the signature of a
+    shared underlying critical locus.
+
+    Per-pair verdicts:
+      "tracking"            : paired diffs within tol at >= 2 levels
+                              (and no level violates tol)
+      "drift"               : diffs within tol at some level(s) and
+                              outside at others — lines separate as
+                              the second axis varies
+      "separated_at_all_levels": outside tol everywhere defined
+      "underdetermined"     : paired diffs defined at < 2 levels
+
+    Also emits `lc_curves` — per-observable, per-family λc(secondary)
+    trajectories — so parallel vs diverging transition lines are
+    directly inspectable.
+    """
+    levels: dict[float, list[dict]] = {}
+    for r in records:
+        v = r.get("sweep", {}).get(secondary_param)
+        if v is not None:
+            levels.setdefault(float(v), []).append(r)
+    if len(levels) < 2:
+        return {"status": "insufficient_levels",
+                "secondary_param": secondary_param,
+                "n_levels": len(levels)}
+
+    per_level: dict[float, dict] = {}
+    for k in sorted(levels):
+        per_level[k] = coincidence_report(
+            group_by_network(levels[k]), observables,
+            n_boot=n_boot, seed=seed)
+
+    # union of pair keys across levels
+    pairs = sorted({p for rep in per_level.values()
+                    for p in rep["pairwise"]})
+    matrix2d = {}
+    for pair in pairs:
+        level_detail = {}
+        diffs_at_levels = {}
+        for k, rep in per_level.items():
+            ent = rep["pairwise"].get(pair)
+            if ent is None:
+                continue
+            diffs = ent.get("paired_diffs") or {}
+            diffs_at_levels[k] = diffs
+            level_detail[str(k)] = {
+                "verdict": ent["verdict"],
+                "n_pairs": ent["n_pairs"],
+                "tol_pair": rep["tol_pair"],
+                "paired_diffs": diffs}
+        n_levels_with_pairs = sum(1 for d in diffs_at_levels.values() if d)
+        flat = [(k, d, per_level[k]["tol_pair"])
+                for k, dd in diffs_at_levels.items()
+                for d in dd.values()]
+        within = sum(1 for _, d, t in flat if abs(d) <= t)
+        if n_levels_with_pairs < 2:
+            verdict = "underdetermined"
+        elif flat and within == len(flat):
+            verdict = "tracking"
+        elif within == 0:
+            verdict = "separated_at_all_levels"
+        else:
+            verdict = "drift"
+        matrix2d[pair] = {"verdict": verdict,
+                          "n_levels_with_pairs": n_levels_with_pairs,
+                          "n_diffs_total": len(flat),
+                          "n_diffs_within_tol": within,
+                          "per_level": level_detail}
+
+    # per-family λc trajectories along the secondary axis
+    lc_curves: dict[str, dict[str, list]] = {}
+    for o in observables:
+        fams: dict[str, list] = {}
+        for k in sorted(per_level):
+            ests = per_level[k]["family_estimates"].get(o, {})
+            for f, e in ests.items():
+                if e["lc"] is not None:
+                    fams.setdefault(f, []).append(
+                        [k, e["lc"], e["class"]])
+        if fams:
+            lc_curves[o] = fams
+
+    return {"status": "ok",
+            "secondary_param": secondary_param,
+            "levels": sorted(levels),
+            "n_levels": len(levels),
+            "pairwise_2d": matrix2d,
+            "lc_curves": lc_curves,
+            "per_level": {str(k): v for k, v in per_level.items()},
+            "note": ("'tracking' = coincidence persists across the "
+                     "secondary axis (signature of a shared critical "
+                     "locus); 'drift' = lines separate as the second "
+                     "axis varies (gated collinearity at best)")}

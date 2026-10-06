@@ -137,6 +137,14 @@ def measure_run(task: dict) -> dict:
         x0_det[~net.is_food] = float(reactor.get("x0_level", 0.15))
     elif reactor.get("x0_policy") == "food_only":
         x0_det = net.food_inlet.copy()
+    elif str(reactor.get("x0_policy", "")).startswith("lineage"):
+        # lineage:<letter> or lineage_a/lineage_b -> seed the species
+        # group dominated by that letter (same rule as _ic_bank).
+        pol = str(reactor["x0_policy"])
+        letter = (pol.split(":", 1)[1] if ":" in pol
+                  else pol.rsplit("_", 1)[-1].upper())
+        x0_det = _lineage_seed(net, seed_key, letter,
+                               level=float(reactor.get("x0_level", 0.08)))
     else:
         x0_det = None
     if rtype == "structural":
@@ -202,8 +210,31 @@ def measure_run(task: dict) -> dict:
         drift = float(np.max(np.abs(starts[-1] - starts[-5])
                              / (np.abs(starts[-5]) + 1e-12)))
         stationary = drift < 1e-4
+        # propagation diagnostics: is the nonfood composition a
+        # persistent lineage signature across dilution cycles, or does
+        # it wander? comp_dist_cycle[i] = d_L1(sig_i, sig_{i-1}) on
+        # end-of-cycle states; a stable lineage -> ~0 asymptotically.
+        end_sigs = [heredity.attractor_signature(net, e) for e in ends]
+        comp_dist = [None] + [
+            heredity.compositional_distance(end_sigs[i],
+                                            end_sigs[i - 1])
+            for i in range(1, n_cycles)]
+        seed_sig = heredity.attractor_signature(net, x0)
+        dist_seed = heredity.compositional_distance(end_sigs[-1],
+                                                    seed_sig)
+        # compact lineage record: top-8 species of the final signature
+        fin = end_sigs[-1]
+        top = np.argsort(fin)[::-1][:8]
+        top = top[fin[top] > 0]
+        lin = [{"species": str(net.structure.get(i, i)),
+                "frac": float(fin[i])} for i in top]
         rec["det"] = {"type": "sd", "tau": tau, "d_factor": d_factor,
                       "n_cycles": n_cycles, "cycle_start_drift": drift,
+                      "m_poly_cycles": [
+                          float(_nonfood_mass(net, e)) for e in ends],
+                      "comp_dist_cycle": comp_dist,
+                      "comp_dist_to_seed": dist_seed,
+                      "final_signature_top": lin,
                       "status": "STATIONARY" if stationary else
                                 "UNRESOLVED"}
         if stationary:
@@ -448,6 +479,30 @@ def _continuation_block(net: ReactionNetwork, reactor: dict,
         out["note"] = ("no fold pair located within the sweep; widen "
                        "values or check mass_floor")
     return out
+
+
+def _lineage_seed(net: ReactionNetwork, seed_key: str, letter: str,
+                  level: float = 0.08) -> np.ndarray:
+    """Species group dominated by `letter` (>=2/3 composition) at
+    `level` — the same lineage-biased rule as _ic_bank, usable as a
+    standalone reactor x0_policy ("lineage:a"). Falls back to a dense
+    seed if the letter group is empty."""
+    rng = np.random.default_rng(
+        derive_seed(seed_key + f"|lineage:{letter}"))
+    nonfood = np.where(~net.is_food)[0]
+    x = net.food_inlet.copy()
+    grp = np.array(
+        [i for i in nonfood
+         if isinstance(net.structure.get(i), str)
+         and len(net.structure[i]) > 1
+         and net.structure[i].count(letter)
+         / len(net.structure[i]) >= 2 / 3],
+        dtype=int)
+    if len(grp):
+        x[grp] = level * (0.5 + 0.5 * rng.random(len(grp)))
+    else:
+        x[nonfood] = level
+    return x
 
 
 def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,

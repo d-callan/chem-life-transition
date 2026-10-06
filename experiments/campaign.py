@@ -352,6 +352,13 @@ def cmd_summarize(args):
         summary["cocriticality"] = cc.coincidence_report(
             cc.group_by_network(records),
             n_boot=int(args.boot))
+        secondary = manifest["protocol"].get("secondary_axis")
+        if secondary:
+            if isinstance(secondary, str):
+                secondary = {"param": secondary}
+            summary["cocriticality_2d"] = cc.coincidence_2d(
+                records, secondary["param"],
+                n_boot=int(args.boot))
 
     (cdir / "summary.json").write_text(
         json.dumps(strict_jsonable(summary), indent=2, sort_keys=True))

@@ -685,9 +685,27 @@ pairwise `center_distances` matrix so borderline merges are auditable.
     loop on net2 (organized to D≈1.0 up, reignites at D≈0.5 down,
     width ≈0.6). Transitions located this way are spinodals, not the
     coexistence point.
-  - *Remaining*: two-stage Scout→Zoom sweeps; 2-D perturbational scan
-    ($D \times \kappa$, the decisive gated-collinearity test); κ axis
-    sweeps; serial-dilution (`sd_map`) propagation protocol.
+  - ~~2-D perturbational scan ($D \times \kappa$)~~ *(implemented;
+    campaign running)*: `coincidence_2d` partitions records by the
+    secondary swept axis and asks whether each paired Δλc stays within
+    tol as that axis varies — verdicts `tracking` (coincidence
+    persists: shared critical locus) vs `drift` (lines separate: gated
+    collinearity at best) vs `separated_at_all_levels`/
+    `underdetermined`; `lc_curves` gives per-family λc(secondary)
+    trajectories. Enabled via protocol `secondary_axis`.
+  - ~~Serial-dilution propagation protocol~~ *(implemented)*: the `sd`
+    reactor now records per-cycle `m_poly_cycles`, `comp_dist_cycle`
+    (cycle-to-cycle L1 signature drift — a stable lineage converges to
+    ~0), `comp_dist_to_seed` (does the initial imprint survive?),
+    `final_signature_top`, and Floquet stability of the periodic fixed
+    point. `x0_policy="lineage:<letter>"` seeds a letter-dominated
+    lineage. **First result**: on a monostable net, organized material
+    survives 30 dilution cycles (m_poly≈0.23, stable fixed point) but
+    lineage:a and lineage:b seeds converge to the *same* signature —
+    **propagation without heredity**. The diagnostic is live; a
+    positive heredity result requires a net multistable under the SD
+    map.
+  - *Remaining*: two-stage Scout→Zoom sweeps; κ axis sweeps.
 
 ### Phase 2: Workstation+ Engine (Tier 2 — dynamic range, not thresholds)
 - [ ] **Step 4: Sparse-ODE upgrade**:
