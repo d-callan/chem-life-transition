@@ -734,6 +734,16 @@ pairwise `center_distances` matrix so borderline merges are auditable.
     λc leave the window or go undefined at κ=1500), so the claim is
     "coincidence wherever both observables are resolved", not "all 8
     families share one locus"; O_persist still unmeasured.
+
+    **O_persist transition-line campaign** (`persist_transition_line`,
+    κ=500, D∈{0.3..0.9}, 3 SSA reps × V=64 × t=200): O_persist joins
+    the co-critical set — `O_maint|O_persist` −0.14,
+    `O_persist|O_assembly` +0.13, `O_persist|O_hered` +0.33, all
+    within tol; n_pairs=1 each (most families keep O_persist defined
+    on or off throughout the window). Note: the pooled
+    transition_fit selected `fold` on only n=4 points with
+    rss≈1e-35 — a 4-param interpolation of 4 points, i.e. overfit,
+    not evidence for a fold.
   - ~~Serial-dilution propagation protocol~~ *(implemented)*: the `sd`
     reactor now records per-cycle `m_poly_cycles`, `comp_dist_cycle`
     (cycle-to-cycle L1 signature drift — a stable lineage converges to
