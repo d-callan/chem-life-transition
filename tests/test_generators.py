@@ -102,3 +102,33 @@ def test_catalytic_multiplicity():
                         n_cat_max=1, p_multi=0.0)
     assert [ch.catalysts for ch in a.channels] == \
            [ch.catalysts for ch in b.channels]
+
+
+def test_ligation_channels():
+    """P1+P2<=>P1P2: conservation, balance, no W, len>=2 substrates,
+    absorbing limit, ordered-pair dedup."""
+    net = polymer_network(alphabet_size=2, max_len=5, ligation=True,
+                          p_cat=0.5, seed=1)
+    lig = [ch for ch in net.channels if ch.mechanism == "ligation"]
+    assert lig                       # channels exist at L=5
+    iW = net.species.index("W")
+    for ch in lig:
+        assert all(i != iW for i, _ in ch.reactants + ch.products)
+        assert all(len(net.species[i]) >= 2 for i, _ in ch.reactants)
+        assert all(len(net.species[i])
+                   == sum(a * len(net.species[j])
+                          for j, a in ch.reactants)
+                   for i, a in ch.products)
+    assert net.check_letter_conservation()["ok"]
+    assert net.check_detailed_balance()["ok"]
+    # no duplicate (reactants, products, catalysts) signatures
+    sigs = [(ch.reactants, ch.products, ch.catalysts) for ch in lig]
+    assert len(sigs) == len(set(sigs))
+    # eps=0 absorbing for ligation too (needs two existing polymers)
+    net0 = polymer_network(alphabet_size=2, max_len=4, ligation=True,
+                           eps=0.0, p_cat=0.5, seed=1)
+    x = net0.food_inlet.copy()
+    f, b = net0.rates(x, eps=0.0)
+    for r, ch in enumerate(net0.channels):
+        if ch.synth:
+            assert f[r] == 0.0 and b[r] == 0.0

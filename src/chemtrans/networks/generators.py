@@ -16,6 +16,13 @@ Channels (all reversible, rates from species free energies g_i):
                                      directions, so K_eq is untouched).
   thermal        PA <=> P + A        spontaneous condensation / hydrolysis;
                                      dG = -g_bond; eps-scaled.
+  ligation       P1 + P2 <=> P1P2    polymer-polymer block joining
+                                     (len>=2 substrates only); dG = g_bond;
+                                     eps-scaled; optional (ligation=True).
+                                     This is the channel class that makes
+                                     assembly index a kinetic-distance
+                                     measure rather than a compressibility
+                                     proxy.
   deactivation   A* <=> A + W        fuel decay; dG = -dmu; NOT eps-scaled.
 
 Detailed balance: dG_elong - dG_deact + dG_hyd = 0 identically, so rate
@@ -53,7 +60,7 @@ import numpy as np
 
 from .core import Channel, ReactionNetwork
 
-GENERATOR_VERSION = "polymer_v2"
+GENERATOR_VERSION = "polymer_v3"
 
 
 def _all_strings(alphabet: list[str], max_len: int) -> list[str]:
@@ -73,6 +80,9 @@ def polymer_network(
     min_cat_len: int = 2,
     n_cat_max: int = 1,
     p_multi: float = 0.0,
+    ligation: bool = False,
+    p_cat_lig: float | None = None,
+    k_join: float = 1.0,
     delta_mu: float = 4.0,
     chi: float = 1.0,
     f_inlet: float = 1.0,
@@ -231,6 +241,66 @@ def polymer_network(
                     synth=True, mechanism="thermal",
                 ))
 
+    # --- fragment ligation: P1 + P2 <=> P1P2 -------------------------
+    # Substrates restricted to len>=2 polymers: monomer incorporation
+    # stays activation-gated (the A* route / thermal channel), so the
+    # absorbing limit is untouched — ligation needs two existing
+    # polymers. Ordered pairs: (p1,p2) and (p2,p1) are distinct products;
+    # distinct splits may share a product and are kept as separate
+    # channels (different reactants = different chemistry).
+    # dG = g_bond (one bond formed); k_r = k_join*exp(dG).
+    if ligation:
+        polys = [s for s in strings if len(s) >= 2]
+        # ordered pairs, deduplicated on (reactant multiset, product):
+        # (p1,p2) and (p2,p1) are the same reaction iff p1+p2 == p2+p1
+        # (e.g. AA+AAA vs AAA+AA -> AAAAA); distinct products stay
+        # separate channels.
+        seen: set[tuple] = set()
+        pairs = []
+        for p1 in polys:
+            for p2 in polys:
+                if len(p1) + len(p2) > max_len:
+                    continue
+                key = (tuple(sorted((p1, p2))), p1 + p2)
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append((p1, p2))
+        n_lig = len(pairs)
+        v_cat = rng.random(n_lig)
+        v_self = rng.random(n_lig)
+        v_info = rng.random(n_lig)
+        v_kin = rng.random(n_lig)
+        v_multi = rng.random((n_lig, m_extra))
+        v_self2 = rng.random((n_lig, m_extra))
+        v_info2 = rng.random((n_lig, m_extra))
+        v_kin2 = rng.random((n_lig, m_extra))
+        p_cl = p_cat if p_cat_lig is None else float(p_cat_lig)
+        for q, (p1, p2) in enumerate(pairs):
+            p12 = p1 + p2
+            i1, i2, i12 = index[p1], index[p2], index[p12]
+            dG = g[i12] - g[i1] - g[i2]          # = g_bond
+            cats: tuple[int, ...] = ()
+            if v_cat[q] < p_cl and candidates:
+                cat_list = [pick_catalyst(v_self[q], v_info[q],
+                                          v_kin[q], p12, i12)]
+                for m in range(m_extra):
+                    if v_multi[q, m] < p_multi:
+                        c = pick_catalyst(v_self2[q, m], v_info2[q, m],
+                                          v_kin2[q, m], p12, i12)
+                        if c not in cat_list:
+                            cat_list.append(c)
+                cats = tuple(cat_list)
+            reacts: dict[int, int] = {}
+            for i in (i1, i2):
+                reacts[i] = reacts.get(i, 0) + 1
+            channels.append(Channel(
+                reactants=tuple(sorted(reacts.items())),
+                products=((i12, 1),),
+                catalysts=cats,
+                k_f=k_join, k_r=k_join * np.exp(dG),
+                synth=True, mechanism="ligation",
+            ))
+
     for a in alphabet:
         iA_, iA0, iW = index[a + "*"], index[a], index["W"]
         dG2 = g[iA0] + g[iW] - g[iA_]  # = -delta_mu
@@ -259,6 +329,7 @@ def polymer_network(
             p_cat=p_cat, p_selfrep=p_selfrep, p_info=p_info,
             min_cat_len=min_cat_len,
             n_cat_max=n_cat_max, p_multi=p_multi,
+            ligation=ligation, p_cat_lig=p_cat_lig, k_join=k_join,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
             kappa=kappa, cat_power=cat_power, g_bond=g_bond,
             k_lig=k_lig, k_hyd=k_hyd, k_deact=k_deact,

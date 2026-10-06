@@ -404,27 +404,33 @@ caveats), plus substring caching across the pool.
 
 Two distinct extensions that must not be conflated:
 
-- **Fragment ligation** ($P_1 + P_2 \rightleftharpoons P_1P_2$, no $W$):
+- **Fragment ligation** ($P_1 + P_2 \rightleftharpoons P_1P_2$, no $W$)
+  — **implemented** (`ligation=True`, `p_cat_lig`, `k_join` in
+  `generators.py`; `GENERATOR_VERSION = "polymer_v3"`):
   the mechanism that makes MA *dynamically meaningful*. With only monomer
   addition, all length-$L$ strings share kinetic distance $L-1$ and MA
   measures compressibility, not assembly difficulty. Ligation channels
   align MA with the real pathway space — and give long strings a kinetic
   shortcut that can break the dimer trap (block assembly vs. serial
-  addition). Requires a reaction-class addition to the generator: two
-  polymer reactants, $|P_1|+|P_2| = |P_1P_2|$, capped at `max_len`.
+  addition).
 
-  Stoichiometry/thermodynamics (verified against the generator):
-  - **No $W$ product.** `W` carries zero letter mass (it is a massless
-    activation-remnant bookkeeping species); emitting it from two neutral
-    polymers would conjure a species from nothing. Plain condensation
-    $P_1+P_2 \rightleftharpoons P_1P_2$ is the clean channel.
-  - $\Delta G = g_{\text{bond}} > 0$ for every join (from
-    $g[s] = g_{\text{bond}}(L-1)$): ligation is an **equilibrium
-    redistribution channel**, pumped indirectly by the $A^*$ drive. It
-    creates a complexity *opportunity*, not a complexity drive.
-  - `k_f/k_r = e^{-g_{\text{bond}}}` per detailed balance; absorbing limit
-    preserved (two polymer reactants — no formation from food-only at
-    $\varepsilon=0$).
+  As built:
+  - Substrates restricted to len≥2 polymers (monomer incorporation stays
+    activation-gated via $A^*$; the thermal channel already covers
+    polymer+monomer condensation).
+  - Ordered pairs deduplicated on (reactant multiset, product):
+    $(p_1,p_2)$ and $(p_2,p_1)$ collapse iff $p_1p_2 = p_2p_1$
+    (e.g. $AA+AAA$ vs $AAA+AA \to AAAAA$); distinct products from the
+    same reactants stay separate channels.
+  - Catalyst assignment reuses the nested self/kin/random lottery on a
+    dedicated latent-draw block, with `p_cat_lig` (default: `p_cat`)
+    and the same `n_cat_max`/`p_multi` multiplicity policy.
+  - Verified: letter conservation, detailed balance, absorbing limit at
+    $\varepsilon=0$, no $W$, no monomer substrates; ODE and SSA run on
+    ligated nets; live attractors reach $L=4$ including `ABAB` via the
+    block join.
+  - Channel counts (deduplicated): 16 at $L=4$, 78 at $L=5$, 266 at
+    $L=6$ — steeper than species growth, as predicted.
   - Residual caveat: MA is a *lower bound* on kinetic distance — realized
     difficulty = pathway length × catalytic enhancement per join. A
     low-MA string on an uncatalyzed join can still lose to a high-MA
@@ -436,8 +442,8 @@ Two distinct extensions that must not be conflated:
   - Scaling: directed ligations $\sum_{L=2}^{L_{\max}} 2^L (L-1) \approx
     516$ at $L=6$ but $\sim 2\times10^6$ at $L=17$ — channel count, not
     species count, is what pushes ligation-enabled pools toward cluster
-    scale. Catalyst assignment on the new class needs an explicit rule
-    (extend the `u_cat` lottery or a separate `p_cat_lig`).
+    scale. Catalyst assignment: dedicated latent-draw block with
+    `p_cat_lig` override (implemented).
 - **Templating** (sequence-directed ligation, mismatch error probabilities,
   complementary duplex thermodynamics): a fidelity mechanism layered on top
   of ligation. Underspecified until its stoichiometry is defined; remains
@@ -663,10 +669,9 @@ pairwise `center_distances` matrix so borderline merges are auditable.
   - **2-D perturbational scan (coarse $D \times \kappa$)**: the decisive
     co-criticality test is whether $\Delta\lambda_c(\kappa) \approx 0$
     persists across a second axis, not a single-axis coincidence.
-  - **Fragment ligation (Knob E)**: add $P_1+P_2 \to P_1P_2+W$ channels
-    (mass-conserving, $g$-derived $\Delta G$, capped at `max_len`) so that
-    MA becomes a kinetic-distance measure; laptop-feasible, test before
-    cluster work.
+  - ~~**Fragment ligation (Knob E)**~~ *(implemented)*: `ligation=True`
+    adds $P_1+P_2 \rightleftharpoons P_1P_2$ channels — MA is now a
+    kinetic-distance measure, not just a compressibility proxy.
   - **Null-derived $A_{\text{cut}}$**: measure $(c, r)$ from a
     $\kappa=0$/eps-only null run, solve $V c r^L 2^{-L} < 1$ for $L^*$,
     record derivation in the manifest.
