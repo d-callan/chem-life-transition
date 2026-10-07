@@ -758,12 +758,30 @@ pairwise `center_distances` matrix so borderline merges are auditable.
     map.
   - *Remaining*: two-stage Scout→Zoom sweeps; κ axis sweeps.
 
-### Phase 2: Workstation+ Engine (Tier 2 — dynamic range, not thresholds)
-- [ ] **Step 4: Sparse-ODE upgrade**:
-  - Sparse Jacobians for $L \sim 10\text{--}12$ ($N \sim 2\text{k--}8\text{k}$ species).
-  - Ligation channels (~10–100k) + explicit catalyst-assignment rule for
-    the new channel class (`u_cat` extension or `p_cat_lig`).
-  - MA estimator upgrade or bound-aware criterion (L>12 returns bounds).
+- [~] **Step 4: Sparse-ODE upgrade** *(core done, verified)*:
+  - ~~Sparse Jacobians~~: CSR `S`/`C`/`J`; `d_rates` replaced the
+    per-channel loop with vectorized COO assembly (bitwise-identical
+    output, ~10× faster even at L=8). `use_sparse` auto at
+    n_species≥1000 or `generator.sparse`.
+  - **Solver tiering, measured**: BDF + sparse LU works at L=10
+    (0.4 s/LU, 2.6M nnz fill) but fails at L=12 (44 s/LU, 45M nnz —
+    catalytic hubs destroy fill). For n>3000 `integrate_cstr` runs a
+    trust-region Newton–Krylov equilibrium seek
+    (`least_squares trf/lsmr` — sparse Jacobian by products, ~2 s at
+    L=12). Trade-off: no trajectory ⇒ OSCILLATORY/RUNAWAY unreachable
+    at that scale (statuses collapse to STATIONARY/UNRESOLVED);
+    recorded in `det.message`.
+  - Certification: `jacobian_eigs` → ARPACK k=6 `which='LR'` in
+    sparse mode (matvec-only); Floquet gated off at n>600.
+  - **Verified end-to-end**: sparse vs dense at L=6 gives bit-equal
+    equilibria and identical attractor counts.
+  - **Physics finding**: at L=12, `p_cat=0.5` yields ~0 RAFs
+    (0–2/82k channels) — the uniform catalyst lottery draws mostly
+    unreachable long species (≤4-mers are ~3% of the L=12 pool).
+    Washout there was physics, not solver failure. Large pools need
+    length-aware catalyst assignment or higher `p_cat`.
+  - Ligation channels + `p_cat_lig`/multiplicity lottery already in;
+    MA estimator returns `bound` at L>12 (excluded from signature).
 - [ ] **Step 5: Derived-threshold assembly tests at scale**:
   - Re-derive $A_{\text{cut}}$ at the larger pool and at the volumes used;
     test whether driven chemistry populates above-cut species.

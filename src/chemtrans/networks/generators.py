@@ -94,6 +94,7 @@ def polymer_network(
     k_hyd: float = 0.1,
     k_deact: float = 0.1,
     seed: int | None = None,
+    sparse: bool | None = None,
 ) -> ReactionNetwork:
     """Build a conserved, reversible, energy-driven polymer network.
 
@@ -323,6 +324,7 @@ def polymer_network(
         kappa=kappa,
         eps=eps,
         cat_power=cat_power,
+        sparse=sparse,
         params=dict(
             generator=GENERATOR_VERSION,
             alphabet_size=alphabet_size, max_len=max_len,

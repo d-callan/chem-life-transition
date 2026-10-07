@@ -238,16 +238,25 @@ def measure_run(task: dict) -> dict:
                       "status": "STATIONARY" if stationary else
                                 "UNRESOLVED"}
         if stationary:
-            mults = ode.sd_fixed_point_multipliers(net, starts[-1], tau,
-                                                   d_factor, eps)
+            if net.n_species <= 600:
+                mults = ode.sd_fixed_point_multipliers(
+                    net, starts[-1], tau, d_factor, eps)
+                floquet = {"floquet_max_abs": float(np.max(np.abs(mults))),
+                           "stable": bool(np.all(np.abs(mults) < 1.0))}
+            else:
+                # FD map Jacobian costs n integrations — infeasible
+                # at sparse scale; report as unverified rather than
+                # silently skipping
+                floquet = {"floquet_max_abs": None,
+                           "stable": None,
+                           "note": "floquet not computed at n>600"}
             obs = closure.phi_decomposition(net, ends[-1], eps)
             rec["equilibrium"] = {
                 "mass_raf": obs["mass_raf"],
                 "phi_gross": obs["phi_gross"],
                 "phi_cat": obs["phi_cat"],
                 "phi_net": obs["phi_net"],
-                "floquet_max_abs": float(np.max(np.abs(mults))),
-                "stable": bool(np.all(np.abs(mults) < 1.0)),
+                **floquet,
                 "m_poly": _nonfood_mass(net, ends[-1]),
                 "x_eq": ends[-1],
             }

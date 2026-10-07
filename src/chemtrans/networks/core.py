@@ -110,6 +110,7 @@ class ReactionNetwork:
         eps=1.0,
         cat_power=1,
         params=None,
+        sparse=None,
     ):
         self.species = tuple(str(s) for s in species)
         self.channels = tuple(channels)
@@ -121,6 +122,10 @@ class ReactionNetwork:
             raise ValueError("cat_power must be a positive integer")
         self.cat_power = int(cat_power)
         self.params = dict(params or {})
+        # sparse mode: never materialize dense S/C/J. None -> auto for
+        # large networks (dense S would be n_species x n_channels).
+        self.use_sparse = (bool(sparse) if sparse is not None
+                           else len(self.species) >= 1000)
 
         n = len(self.species)
         self._validate()
@@ -214,24 +219,55 @@ class ReactionNetwork:
     def stoichiometry(self) -> np.ndarray:
         """S[i, r] = net production of species i by channel r (forward)."""
         if "S" not in self._cache:
-            S = np.zeros((self.n_species, self.n_channels))
-            for r, ch in enumerate(self.channels):
-                for i, a in ch.products:
-                    S[i, r] += a
-                for i, a in ch.reactants:
-                    S[i, r] -= a
-            self._cache["S"] = S
+            if self.use_sparse:
+                self._cache["S"] = self._stoichiometry_sparse()
+            else:
+                S = np.zeros((self.n_species, self.n_channels))
+                for r, ch in enumerate(self.channels):
+                    for i, a in ch.products:
+                        S[i, r] += a
+                    for i, a in ch.reactants:
+                        S[i, r] -= a
+                self._cache["S"] = S
         return self._cache["S"]
+
+    def _stoichiometry_sparse(self):
+        """CSR stoichiometry — ~4 nnz per channel regardless of pool
+        size; never materialize the dense array."""
+        import scipy.sparse as sp
+        rows, cols, data = [], [], []
+        for r, ch in enumerate(self.channels):
+            for i, a in ch.products:
+                rows.append(i); cols.append(r); data.append(float(a))
+            for i, a in ch.reactants:
+                rows.append(i); cols.append(r); data.append(-float(a))
+        return sp.csr_matrix(
+            (np.asarray(data), (np.asarray(rows), np.asarray(cols))),
+            shape=(self.n_species, self.n_channels))
 
     def catalysis_matrix(self) -> np.ndarray:
         """C[r, c] = 1 if species c catalyzes channel r (alternatives)."""
         if "C" not in self._cache:
-            C = np.zeros((self.n_channels, self.n_species))
-            for r, ch in enumerate(self.channels):
-                for c in ch.catalysts:
-                    C[r, c] = 1.0
-            self._cache["C"] = C
+            if self.use_sparse:
+                self._cache["C"] = self._catalysis_sparse()
+            else:
+                C = np.zeros((self.n_channels, self.n_species))
+                for r, ch in enumerate(self.channels):
+                    for c in ch.catalysts:
+                        C[r, c] = 1.0
+                self._cache["C"] = C
         return self._cache["C"]
+
+    def _catalysis_sparse(self):
+        import scipy.sparse as sp
+        rows, cols = [], []
+        for r, ch in enumerate(self.channels):
+            for c in ch.catalysts:
+                rows.append(r); cols.append(c)
+        return sp.csr_matrix(
+            (np.ones(len(rows)),
+             (np.asarray(rows), np.asarray(cols))),
+            shape=(self.n_channels, self.n_species))
 
     def _factors(self) -> tuple[np.ndarray, np.ndarray, int]:
         """Per-channel participant index lists for fwd/rev directions,
@@ -269,7 +305,8 @@ class ReactionNetwork:
         kf, kr, synth = self._rate_vectors()
         C = self.catalysis_matrix()
         bg = np.where(synth, eps, 1.0)
-        boost = bg + self.kappa * (C @ np.power(x, self.cat_power))
+        boost = bg + self.kappa * np.asarray(
+            C @ np.power(x, self.cat_power)).ravel()
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
         return kf * mf * boost, kr * mr * boost
@@ -287,6 +324,15 @@ class ReactionNetwork:
         """
         if eps is None:
             eps = self.eps
+        if self.use_sparse:
+            return self._d_rates_sparse(x, eps)
+        # the COO assembly is strictly faster than the per-channel
+        # loop even at small sizes; densify for dense-mode callers
+        Df, Db = self._d_rates_sparse(x, eps)
+        return Df.toarray(), Db.toarray()
+
+    def _d_rates_dense(self, x: np.ndarray, eps: float):
+        """Reference per-channel loop — kept for cross-checks."""
         x = np.asarray(x, dtype=float)
         n, nc = self.n_species, self.n_channels
         x_app = np.append(x, 1.0)
@@ -294,7 +340,8 @@ class ReactionNetwork:
         kf, kr, synth = self._rate_vectors()
         C = self.catalysis_matrix()
         bg = np.where(synth, eps, 1.0)
-        Cx = C @ np.power(x, self.cat_power)
+        Cx = np.asarray(
+            C @ np.power(x, self.cat_power)).ravel()
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
 
@@ -327,6 +374,75 @@ class ReactionNetwork:
                 Db[r, cat_idx] += kr[r] * mr[r] * self.kappa * dpow
         return Df, Db
 
+    def _cat_idx_padded(self) -> tuple[np.ndarray, int]:
+        """(nc x mc) padded catalyst index array, sentinel n_species."""
+        if "catidx" not in self._cache:
+            cats = [ch.catalysts for ch in self.channels]
+            mc = max([len(c) for c in cats] + [1])
+            R = np.full((self.n_channels, mc), self.n_species,
+                        dtype=int)
+            for r, c in enumerate(cats):
+                R[r, : len(c)] = c
+            self._cache["catidx"] = (R, mc)
+        return self._cache["catidx"]
+
+    def _d_rates_sparse(self, x: np.ndarray, eps: float):
+        """Vectorized COO assembly of (Df, Db) — same math as d_rates
+        but no dense (nc x n) arrays and no per-channel Python loop.
+        Duplicate (r, s) entries (e.g. AA+AA reactant positions) are
+        summed by csr conversion."""
+        import scipy.sparse as sp
+        n, nc = self.n_species, self.n_channels
+        x_app = np.append(x, 1.0)
+        Rf, Rr, m = self._factors()
+        kf, kr, synth = self._rate_vectors()
+        C = self.catalysis_matrix()
+        bg = np.where(synth, eps, 1.0)
+        Cx = np.asarray(
+            C @ np.power(x, self.cat_power)).ravel()
+        mf = np.prod(x_app[Rf], axis=1)
+        mr = np.prod(x_app[Rr], axis=1)
+
+        rows_f, cols_f, data_f = [], [], []
+        rows_b, cols_b, data_b = [], [], []
+        rr = np.arange(nc)
+        for pos in range(m):
+            for R, xk, kvec, flux_m, rows, cols, data in (
+                    (Rf, x_app, kf, mf, rows_f, cols_f, data_f),
+                    (Rr, x_app, kr, mr, rows_b, cols_b, data_b)):
+                s = R[:, pos]
+                mask = s < n
+                if not mask.any():
+                    continue
+                others = np.ones(nc)
+                for q in range(m):
+                    if q != pos:
+                        others *= xk[R[:, q]]
+                rows.append(rr[mask])
+                cols.append(s[mask])
+                data.append((kvec * (bg + self.kappa * Cx)
+                             * others)[mask])
+        Rc, mc = self._cat_idx_padded()
+        for pos in range(mc):
+            c = Rc[:, pos]
+            mask = c < n
+            if not mask.any():
+                continue
+            dpow = (self.cat_power
+                    * np.power(np.maximum(x[np.where(mask, c, 0)], 0.0),
+                               self.cat_power - 1))
+            rows_f.append(rr[mask]); cols_f.append(c[mask])
+            data_f.append((kf * mf * self.kappa * dpow)[mask])
+            rows_b.append(rr[mask]); cols_b.append(c[mask])
+            data_b.append((kr * mr * self.kappa * dpow)[mask])
+
+        def mk(rows, cols, data):
+            return sp.csr_matrix(
+                (np.concatenate(data),
+                 (np.concatenate(rows), np.concatenate(cols))),
+                shape=(nc, n))
+        return mk(rows_f, cols_f, data_f), mk(rows_b, cols_b, data_b)
+
     def jacobian(
         self,
         x: np.ndarray,
@@ -335,6 +451,10 @@ class ReactionNetwork:
     ) -> np.ndarray:
         """J = S (Df - Db) - dilution*I for the CSTR vector field."""
         Df, Db = self.d_rates(x, eps)
+        if self.use_sparse:
+            import scipy.sparse as sp
+            return (self.stoichiometry() @ (Df - Db)
+                    - dilution * sp.eye(self.n_species, format="csr"))
         return self.stoichiometry() @ (Df - Db) - dilution * np.eye(
             self.n_species
         )
@@ -380,7 +500,9 @@ class ReactionNetwork:
         internal (non-boundary) channels."""
         if self.comp is None:
             raise ValueError("no composition matrix")
-        res = self.comp @ self.stoichiometry()
+        S = self.stoichiometry()
+        res = (np.asarray(S.T @ self.comp.T).T
+               if self.use_sparse else self.comp @ S)
         bad = np.argwhere(np.abs(res) > 0)
         return {
             "ok": bad.size == 0,

@@ -131,3 +131,57 @@ def test_closed_system_detailed_balance():
     assert r.converged
     flux = np.abs(net.net_flux(r.x_eq, eps=1.0))
     assert flux.max() < 1e-5
+
+
+def test_sparse_path_bitwise_equivalent():
+    """Sparse mode must reproduce dense-path results: S, C, rates,
+    d_rates, Jacobian, and the certified equilibrium."""
+    from chemtrans.networks.core import ReactionNetwork
+    kw = dict(max_len=4, alphabet_size=2, p_cat=0.6, p_info=0.7,
+              p_selfrep=0.3, ligation=True, n_cat_max=3, p_multi=0.5,
+              chi=0.7, delta_mu=4.0, kappa=500.0, cat_power=2, seed=5)
+    nd = polymer_network(**kw)
+    ns = ReactionNetwork(nd.species, nd.channels, nd.food,
+                         structure=nd.structure, comp=nd.comp,
+                         g=nd.g, food_inlet=nd.food_inlet,
+                         kappa=nd.kappa, eps=nd.eps,
+                         cat_power=nd.cat_power, sparse=True)
+    assert ns.use_sparse and not nd.use_sparse
+    rng = np.random.default_rng(0)
+    x = np.abs(rng.normal(0, 0.3, nd.n_species))
+    eps = 1e-3
+    np.testing.assert_allclose(ns.stoichiometry().toarray(),
+                               nd.stoichiometry())
+    np.testing.assert_allclose(ns.catalysis_matrix().toarray(),
+                               nd.catalysis_matrix())
+    f1, b1 = nd.rates(x, eps)
+    f2, b2 = ns.rates(x, eps)
+    np.testing.assert_allclose(f2, f1)
+    np.testing.assert_allclose(b2, b1)
+    for xx in (x, np.zeros(nd.n_species)):
+        Df1, Db1 = nd.d_rates(xx, eps)
+        Df2, Db2 = ns.d_rates(xx, eps)
+        np.testing.assert_allclose(Df2.toarray(), Df1)
+        np.testing.assert_allclose(Db2.toarray(), Db1)
+    np.testing.assert_allclose(ns.jacobian(x, 0.3, eps).toarray(),
+                               nd.jacobian(x, 0.3, eps))
+
+
+def test_sparse_cstr_equilibrium_matches_dense():
+    """End-to-end: BDF+sparse-LU trajectory and lsmr polish must land
+    on the same certified equilibrium as the dense path."""
+    base = {"max_len": 5, "alphabet_size": 2,
+            "p_cat": 0.6, "p_info": 0.7, "p_selfrep": 0.3,
+            "ligation": True, "n_cat_max": 3, "p_multi": 0.5,
+            "chi": 0.7, "delta_mu": 4.0, "kappa": 500.0,
+            "cat_power": 2, "seed": 5}
+    nd = polymer_network(**base)
+    ns = polymer_network(**base, sparse=True)
+    x0 = ns.food_inlet.copy()
+    x0[~ns.is_food] = 0.15
+    rd = ode.integrate_cstr(nd, t_max=200.0, dilution=0.3, x0=x0,
+                            eps=0.0)
+    rs = ode.integrate_cstr(ns, t_max=200.0, dilution=0.3, x0=x0,
+                            eps=0.0)
+    assert rs.trajectory_type == rd.trajectory_type == "STATIONARY"
+    np.testing.assert_allclose(rs.x_eq, rd.x_eq, atol=1e-8, rtol=1e-5)

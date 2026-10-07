@@ -62,6 +62,64 @@ def _scaled_residual(dxdz: np.ndarray, x: np.ndarray, atol, rtol):
     return np.abs(dxdz) / (atol + rtol * np.abs(x))
 
 
+def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
+                        dilution: float, eps: float,
+                        conv_atol: float, conv_rtol: float,
+                        max_restarts: int = 2,
+                        ) -> tuple[np.ndarray, np.ndarray, int, bool, str]:
+    """Equilibrium seek for sparse networks: trust-region Newton with
+    Krylov inner solves (least_squares trf/lsmr) — needs only sparse
+    Jacobian products, never factors the Jacobian.
+
+    Sparse LU is unusable at L>=12: catalytic hubs make LU fill-in
+    ~150x (measured: 44 s/factorization, 45M nnz at L=12 vs 0.4 s at
+    L=10). lsmr solves the trust-region subproblem by matrix-vector
+    products (~ms each).
+
+    Returns (x, scaled_residual, n_rhs_evals, converged, message).
+    No trajectory is produced — oscillation/runaway classification is
+    unavailable on this path; status is STATIONARY or UNRESOLVED.
+    """
+    from scipy.optimize import least_squares
+
+    nfev = 0
+
+    def rhs(y):
+        return rhs_cstr(net, np.maximum(y, 0.0), dilution, eps)
+
+    def jac(y):
+        return net.jacobian(np.maximum(y, 0.0), dilution, eps)
+
+    def resid_ok(x):
+        r = _scaled_residual(rhs(x), x, conv_atol, conv_rtol)
+        return r, bool(np.all(r <= 1.0) and np.all(np.isfinite(x)))
+
+    x = np.maximum(np.asarray(x0, float), 0.0)
+    best_x, best_r = x, resid_ok(x)[0]
+    rng = np.random.default_rng(0)
+    for attempt in range(1 + max_restarts):
+        sol = least_squares(rhs, x, jac=jac, method="trf",
+                            tr_solver="lsmr",
+                            xtol=1e-11, ftol=1e-11, gtol=1e-11,
+                            max_nfev=300)
+        nfev += int(sol.nfev)
+        xp = np.maximum(sol.x, 0.0)
+        r, ok = resid_ok(xp)
+        if np.nanmax(r) < np.nanmax(best_r):
+            best_x, best_r = xp, r
+        if ok:
+            return xp, r, nfev, True, \
+                f"trf/lsmr equilibrium (attempt {attempt + 1})"
+        # perturb restart: sparse multiplicative jitter escapes bad
+        # basins without destroying the current scale
+        x = np.maximum(sol.x * (1 + 0.1 * rng.standard_normal(len(x))),
+                       0.0) if np.all(np.isfinite(sol.x)) \
+            else np.maximum(x0, 0.0)
+    return best_x, best_r, nfev, False, \
+        (f"trf/lsmr did not converge in {1 + max_restarts} attempts "
+         f"(resid_max={np.nanmax(best_r):.2e})")
+
+
 def integrate_cstr(
     net: ReactionNetwork,
     t_max: float = 200.0,
@@ -94,6 +152,30 @@ def integrate_cstr(
         x0 = net.food_inlet.copy()
     x = np.maximum(np.asarray(x0, dtype=float), 0.0)
 
+    if net.use_sparse and n > 3000:
+        # Sparse-LU implicit steppers are infeasible at this scale
+        # (catalytic hubs cause ~150x LU fill-in; measured 44 s/LU at
+        # L=12). Trust-region Krylov equilibrium seek instead; no
+        # trajectory => no oscillation classification.
+        xk, resid, nfev_k, ok, msg = _krylov_equilibrium(
+            net, x, dilution, eps, conv_atol, conv_rtol)
+        ttype = "STATIONARY" if ok else "UNRESOLVED"
+        # steady-state material balance: rhs=0 implies
+        # D(feed - M) + 0 = 0 is embedded in the residual; report the
+        # letter-mass residual separately as the balance error
+        if net.comp is not None:
+            dm = net.comp.sum(axis=0) @ rhs_cstr(
+                net, xk, dilution, eps)
+            feed = max(abs(net.feed_letters()), 1e-12)
+            mat_err = float(np.max(np.abs(dm)) / feed)
+        else:
+            mat_err = np.nan
+        return ODEResult(np.array([0.0]), xk[None, :], ok,
+                         f"krylov equilibrium seek: {msg}",
+                         nfev_k, ttype, resid,
+                         np.nan, mat_err,
+                         xk if ok else None, eps, dilution)
+
     def rhs(t, y):
         return rhs_cstr(net, np.maximum(y, 0.0), dilution, eps)
 
@@ -108,10 +190,15 @@ def integrate_cstr(
     converged = False
     message = "max horizon reached"
     n_eval = max(3, n_points // n_chunks)
+    # LSODA wraps ODEPACK (dense Jacobians only). In sparse mode use
+    # BDF, which factors the sparse Jacobian by sparse LU — feasible
+    # at n <= ~3000 (L=10: ~0.4 s/LU); larger nets take the
+    # equilibrium-seek path above.
+    method = "BDF" if net.use_sparse else "LSODA"
 
     for _ in range(n_chunks):
         t_eval = np.linspace(t, t + chunk, n_eval)
-        sol = solve_ivp(rhs, (t, t + chunk), x, method="LSODA", jac=jac,
+        sol = solve_ivp(rhs, (t, t + chunk), x, method=method, jac=jac,
                         t_eval=t_eval, rtol=1e-8, atol=1e-11)
         nfev += sol.nfev
         if not sol.success:
@@ -163,15 +250,30 @@ def integrate_cstr(
     # sit in the basin of a certifiable fixed point. Conversely a
     # trajectory-flagged 'converged' point must still pass polish.
     if polish:
-        sol = scipy_root(
-            lambda y: rhs_cstr(net, np.maximum(y, 0.0), dilution, eps),
-            x, jac=lambda y: net.jacobian(np.maximum(y, 0.0),
-                                          dilution, eps),
-            method="hybr")
-        xp = np.maximum(sol.x, 0.0)
+        if net.use_sparse:
+            # trust-region Newton with Krylov inner solves — uses the
+            # sparse Jacobian by products, never factors it
+            from scipy.optimize import least_squares
+            sol_ls = least_squares(
+                lambda y: rhs_cstr(net, np.maximum(y, 0.0),
+                                   dilution, eps),
+                x,
+                jac=lambda y: net.jacobian(np.maximum(y, 0.0),
+                                           dilution, eps),
+                method="trf", tr_solver="lsmr",
+                xtol=1e-11, ftol=1e-11, gtol=1e-11, max_nfev=300)
+            xp, polish_ok = np.maximum(sol_ls.x, 0.0), True
+        else:
+            sol = scipy_root(
+                lambda y: rhs_cstr(net, np.maximum(y, 0.0),
+                                   dilution, eps),
+                x, jac=lambda y: net.jacobian(np.maximum(y, 0.0),
+                                              dilution, eps),
+                method="hybr")
+            xp, polish_ok = np.maximum(sol.x, 0.0), sol.success
         pr = _scaled_residual(rhs_cstr(net, xp, dilution, eps),
                               xp, conv_atol, conv_rtol)
-        if sol.success and np.all(pr <= 1.0) and \
+        if polish_ok and np.all(pr <= 1.0) and \
                 np.all(np.isfinite(xp)):
             x, resid_end, converged = xp, pr, True
 
@@ -235,13 +337,14 @@ def sd_map(
     x = np.asarray(x0, dtype=float).copy()
     starts = np.empty((n_cycles, net.n_species))
     ends = np.empty((n_cycles, net.n_species))
+    method = "Radau" if net.use_sparse else "LSODA"
     for c in range(n_cycles):
         starts[c] = x
         sol = solve_ivp(
             lambda t, y: net.stoichiometry()
             @ net.net_flux(np.maximum(y, 0.0), eps),
             (0.0, tau), np.maximum(x, 0.0),
-            method="LSODA",
+            method=method,
             jac=lambda t, y: net.jacobian(np.maximum(y, 0.0), 0.0, eps),
             rtol=1e-8, atol=1e-11,
         )

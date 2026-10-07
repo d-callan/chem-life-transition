@@ -119,7 +119,8 @@ def phi_decomposition(
     x_app = np.append(x, 1.0)
     mf = np.prod(x_app[Rf], axis=1)
     mr = np.prod(x_app[Rr], axis=1)
-    cat_amp = net.kappa * (net.catalysis_matrix() @ x)
+    cat_amp = net.kappa * np.asarray(
+        net.catalysis_matrix() @ x).ravel()
     cat_f = kf * mf * cat_amp
     cat_b = kr * mr * cat_amp
 

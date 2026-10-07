@@ -15,9 +15,30 @@ from ..networks.core import ReactionNetwork
 
 
 def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
-                  eps: float | None = None) -> np.ndarray:
-    """Eigenvalues of the CSTR Jacobian at x, sorted by real part desc."""
+                  eps: float | None = None,
+                  k_sparse: int = 6) -> np.ndarray:
+    """Eigenvalues of the CSTR Jacobian at x, sorted by real part desc.
+
+    Sparse networks: only the `k_sparse` rightmost eigenvalues via
+    scipy.sparse.linalg.eigs (which='LR'). Certification only needs
+    the leading real part; the returned array is shorter than
+    n_species in that mode. If ARPACK fails to converge we report
+    what it found — the caller treats the certification as
+    'unresolved' rather than inventing a sign."""
     J = net.jacobian(np.maximum(np.asarray(x, float), 0.0), dilution, eps)
+    if net.use_sparse:
+        import scipy.sparse.linalg as spla
+        n = net.n_species
+        k = min(k_sparse, n - 2)
+        try:
+            w = spla.eigs(J, k=k, which="LR",
+                          return_eigenvectors=False,
+                          maxiter=4000)
+        except spla.ArpackNoConvergence as e:
+            w = e.eigenvalues_converged
+            if w is None or len(w) == 0:
+                return np.array([np.nan + 0j])
+        return w[np.argsort(-w.real)]
     w = np.linalg.eigvals(J)
     return w[np.argsort(-w.real)]
 
