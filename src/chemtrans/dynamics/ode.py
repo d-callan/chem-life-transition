@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import scipy.sparse as sp_sparse
 from scipy.integrate import solve_ivp
 from scipy.optimize import root as scipy_root
 
@@ -97,6 +98,70 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
     x = np.maximum(np.asarray(x0, float), 0.0)
     best_x, best_r = x, resid_ok(x)[0]
     rng = np.random.default_rng(0)
+
+    # Phase 1: pseudo-transient continuation. Follow the physical
+    # transient with implicit Euler steps (x_{k+1} = x_k + dt*f) solved
+    # by damped Newton with an lsmr inner solve on (I/dt - J) — one
+    # Jacobian build per Newton iteration, matvecs only after that.
+    # A step is accepted when the *step equation* is solved loosely
+    # (||F(y)|| <= 0.2*||f(x)||); errors are damped by continuation
+    # itself. dt grows geometrically; converges only to states
+    # reachable from x0 — the same basin a trajectory would find.
+    # Runs BEFORE the direct solve: Newton polish is for roots, not
+    # for finding basins.
+    from scipy.sparse.linalg import lsmr
+
+    def ptc(x_start, dt0=0.1, steps=200, budget=300):
+        n = len(x_start)
+        I = sp_sparse.eye(n, format='csc')
+        x = np.maximum(x_start, 0.0)
+        dt, spent = dt0, 0
+        for _ in range(steps):
+            _, ok = resid_ok(x)
+            if ok:
+                return x, spent
+            f0 = np.linalg.norm(rhs(x), np.inf)
+            step_ok = False
+            for _retry in range(8):
+                y = x.copy()
+                J = None
+                for it in range(10):
+                    F = (y - x) / dt - rhs(y)
+                    if np.linalg.norm(F, np.inf) <= 0.2 * f0 + 1e-10:
+                        break
+                    if J is None or it % 3 == 0:
+                        spent += 1
+                        J = jac(y)
+                    d = lsmr(I / dt - J, -F, atol=1e-6, btol=1e-6,
+                             maxiter=200)[0]
+                    y = np.maximum(y + d, 0.0)
+                    if not np.all(np.isfinite(y)):
+                        break
+                if np.all(np.isfinite(y)) and \
+                        np.linalg.norm((y - x) / dt - rhs(y), np.inf) \
+                        <= 0.25 * f0 + 1e-10:
+                    x = y
+                    step_ok = True
+                    dt = min(dt * 3.0, 1e12)
+                    break
+                dt /= 5.0
+                if dt < 1e-10 or spent >= budget:
+                    break
+            if not step_ok or spent >= budget:
+                break
+        return x, spent
+
+    x_ptc, _ = ptc(x)
+    r, ok = resid_ok(x_ptc)
+    nfev += 200
+    if np.nanmax(r) < np.nanmax(best_r):
+        best_x, best_r = x_ptc, r
+    if ok:
+        x = x_ptc
+    else:
+        x = np.maximum(best_x, 0.0)
+
+    # Phase 2: Newton polish (trf/lsmr) with jittered restarts.
     for attempt in range(1 + max_restarts):
         sol = least_squares(rhs, x, jac=jac, method="trf",
                             tr_solver="lsmr",
@@ -109,15 +174,15 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
             best_x, best_r = xp, r
         if ok:
             return xp, r, nfev, True, \
-                f"trf/lsmr equilibrium (attempt {attempt + 1})"
+                f"PTC + trf/lsmr polish (attempt {attempt + 1})"
         # perturb restart: sparse multiplicative jitter escapes bad
         # basins without destroying the current scale
         x = np.maximum(sol.x * (1 + 0.1 * rng.standard_normal(len(x))),
                        0.0) if np.all(np.isfinite(sol.x)) \
             else np.maximum(x0, 0.0)
     return best_x, best_r, nfev, False, \
-        (f"trf/lsmr did not converge in {1 + max_restarts} attempts "
-         f"(resid_max={np.nanmax(best_r):.2e})")
+        (f"no equilibrium found (PTC + direct; "
+         f"resid_max={np.nanmax(best_r):.2e})")
 
 
 def integrate_cstr(

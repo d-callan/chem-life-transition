@@ -766,20 +766,35 @@ pairwise `center_distances` matrix so borderline merges are auditable.
   - **Solver tiering, measured**: BDF + sparse LU works at L=10
     (0.4 s/LU, 2.6M nnz fill) but fails at L=12 (44 s/LU, 45M nnz —
     catalytic hubs destroy fill). For n>3000 `integrate_cstr` runs a
-    trust-region Newton–Krylov equilibrium seek
-    (`least_squares trf/lsmr` — sparse Jacobian by products, ~2 s at
-    L=12). Trade-off: no trajectory ⇒ OSCILLATORY/RUNAWAY unreachable
-    at that scale (statuses collapse to STATIONARY/UNRESOLVED);
-    recorded in `det.message`.
+    two-phase Krylov seek: **pseudo-transient continuation** (implicit
+    Euler steps $x_{k+1}=x_k+dt\,f$, damped Newton with `lsmr` on
+    $I/dt-J$, geometric $dt$ growth — matvec-only, basin-respecting
+    like a trajectory), then `least_squares trf/lsmr` polish.
+    Measured: certified STATIONARY at L=12 in ~84 s cold, ~1 s
+    warm-started. Trade-off: no true trajectory ⇒
+    OSCILLATORY/RUNAWAY unreachable at that scale (statuses collapse
+    to STATIONARY/UNRESOLVED); recorded in `det.message`.
   - Certification: `jacobian_eigs` → ARPACK k=6 `which='LR'` in
     sparse mode (matvec-only); Floquet gated off at n>600.
   - **Verified end-to-end**: sparse vs dense at L=6 gives bit-equal
     equilibria and identical attractor counts.
-  - **Physics finding**: at L=12, `p_cat=0.5` yields ~0 RAFs
-    (0–2/82k channels) — the uniform catalyst lottery draws mostly
-    unreachable long species (≤4-mers are ~3% of the L=12 pool).
-    Washout there was physics, not solver failure. Large pools need
-    length-aware catalyst assignment or higher `p_cat`.
+  - **`cat_max_len` gate added** (`min_cat_len ≤ len ≤ cat_max_len`
+    for the catalyst lottery): at L=12 the uniform lottery drew
+    mostly unreachable long species (≤4-mers are ~3% of the pool);
+    with `cat_max_len=4`, RAFs recover — 448 RAF channels at
+    `p_cat=0.7`, 1800 at `p_cat=0.9`, percolated at 0.98. Default
+    `None` preserves existing ensembles bit-for-bit; treated as a
+    family-preserving policy parameter (same latent draws).
+  - **Physics finding (needs robustness check)**: on a RAF-containing
+    L=12 net (p_cat=0.9, cat_max_len=4, κ=500), the PTC transient
+    showed organized mass nearly forming (m≈0.83 plateau, residual
+    −4 decades) then decaying to **certified washout even at
+    D=0.02**. Candidate mechanism: mass spread over 8193 species →
+    per-catalyst c~1e-4 → κc²≈5e-3 ≪ 1, catalytic closure cannot
+    self-sustain. Structural RAF ≠ dynamical maintenance at scale —
+    **but this is one seed/one κ**; a κ×seed robustness check is
+    required before claiming the effect is general (user is running
+    it off-box; it exceeds local runtime budget).
   - Ligation channels + `p_cat_lig`/multiplicity lottery already in;
     MA estimator returns `bound` at L>12 (excluded from signature).
 - [ ] **Step 5: Derived-threshold assembly tests at scale**:

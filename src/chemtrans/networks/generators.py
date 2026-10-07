@@ -78,6 +78,7 @@ def polymer_network(
     p_selfrep: float = 0.3,
     p_info: float = 0.7,
     min_cat_len: int = 2,
+    cat_max_len: int | None = None,
     n_cat_max: int = 1,
     p_multi: float = 0.0,
     ligation: bool = False,
@@ -170,9 +171,12 @@ def polymer_network(
     candidates = [
         index[s]
         for s in strings
-        if len(s) >= min_cat_len
+        if min_cat_len <= len(s) <= (cat_max_len or max_len)
     ]
-    cand_strings = [s for s in strings if len(s) >= min_cat_len]
+    cand_strings = [
+        s for s in strings
+        if min_cat_len <= len(s) <= (cat_max_len or max_len)
+    ]
 
     def pick_catalyst(u_s: float, u_i: float, u_k: float,
                       PA: str, iPA: int) -> int:
@@ -329,7 +333,7 @@ def polymer_network(
             generator=GENERATOR_VERSION,
             alphabet_size=alphabet_size, max_len=max_len,
             p_cat=p_cat, p_selfrep=p_selfrep, p_info=p_info,
-            min_cat_len=min_cat_len,
+            min_cat_len=min_cat_len, cat_max_len=cat_max_len,
             n_cat_max=n_cat_max, p_multi=p_multi,
             ligation=ligation, p_cat_lig=p_cat_lig, k_join=k_join,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
