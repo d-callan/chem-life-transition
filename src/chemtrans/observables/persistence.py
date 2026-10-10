@@ -135,13 +135,17 @@ def rmst(times: np.ndarray, events: np.ndarray,
     if t_star <= 0:
         return 0.0
     t_knots, S, _ = kaplan_meier(times, events)
-    t_ext = np.append(np.clip(t_knots, 0, t_star), t_star)
-    t_ext = np.unique(t_ext)
-    S_at = np.empty_like(t_ext)
-    for i, tt in enumerate(t_ext):
-        j = np.searchsorted(t_knots, tt, side="right") - 1
-        S_at[i] = S[max(j, 0)]
-    return float(np.trapezoid(S_at, t_ext))
+    # KM S(t) is a right-continuous STEP function — exact RMST is the
+    # piecewise-constant integral S(t_i) * (t_{i+1} - t_i), not a
+    # trapezoid (which linearly interpolates drops and underestimates).
+    t_all = np.unique(np.concatenate(
+        ([0.0], np.clip(t_knots, 0.0, t_star), [t_star])))
+    total = 0.0
+    for i in range(len(t_all) - 1):
+        j = np.searchsorted(t_knots, t_all[i], side="right") - 1
+        s_left = S[j] if j >= 0 else 1.0
+        total += s_left * (t_all[i + 1] - t_all[i])
+    return float(total)
 
 
 def survival_table(obs: list[tuple[float, bool]]) -> dict:

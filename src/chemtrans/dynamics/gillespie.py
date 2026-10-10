@@ -48,6 +48,12 @@ class Process:
     delta: tuple[tuple[int, int], ...]  # (species, dcount) net stoich
     kind: str                      # "channel" | "feed" | "dilution"
     channel: int                   # source channel index or -1
+    # functional-boost catalysis (hazard_mode="functional"): h is
+    # multiplied by (n_s / V)^power — the exact SSA analogue of the
+    # ODE's phenomenological kappa * x_c^p rate law, rather than the
+    # default literal p-molecule falling-factorial mechanism. None for
+    # "participants" mode and all non-catalyzed processes.
+    func_boost: tuple[int, int] | None = None
 
 
 def _mk_offsets(parts: list[int]) -> tuple[int, ...]:
@@ -60,8 +66,26 @@ def _mk_offsets(parts: list[int]) -> tuple[int, ...]:
 
 
 def build_processes(net: ReactionNetwork, dilution: float,
-                    eps: float | None = None) -> list[Process]:
-    """Expand channels + boundary processes for the SSA."""
+                    eps: float | None = None,
+                    hazard_mode: str = "participants") -> list[Process]:
+    """Expand channels + boundary processes for the SSA.
+
+    hazard_mode selects the cooperative-catalysis convention:
+      "participants" (default) — cat_power catalyst COPIES are literal
+        reactant participants; hazard uses falling factorials (n_c)_p,
+        identically zero at n_c < p. This is the mechanistically exact
+        interpretation of cooperative catalysis.
+      "functional" — the ODE's phenomenological boost kappa * (n_c/V)^p
+        multiplies the rate; a single catalyst copy produces nonzero
+        catalytic hazard for any n_c > 0, matching the deterministic
+        rate law pointwise. Use to isolate whether a stochastic claim
+        (small-V extinction, nucleation barriers) is physics or an
+        artifact of the (n_c)_p zero at n_c <= 1.
+    """
+    if hazard_mode not in ("participants", "functional"):
+        raise ValueError(
+            f"hazard_mode must be 'participants'|'functional', "
+            f"got {hazard_mode!r}")
     if eps is None:
         eps = net.eps
     procs: list[Process] = []
@@ -80,8 +104,13 @@ def build_processes(net: ReactionNetwork, dilution: float,
                     rate=k, participants=parts, offsets=_mk_offsets(list(parts)),
                     delta=delta, kind="channel", channel=r))
         for c in ch.catalysts:
-            # cooperative catalysis: cat_power copies of c participate
-            cat_parts = (c,) * net.cat_power
+            if hazard_mode == "participants":
+                # cooperative catalysis: cat_power copies of c participate
+                cat_parts = (c,) * net.cat_power
+                boost = None
+            else:
+                cat_parts = ()
+                boost = (c, net.cat_power)
             for direction, parts, delta, k in (
                     ("fwd", ch.factors("fwd") + cat_parts, fwd_delta,
                      ch.k_f * net.kappa),
@@ -91,7 +120,8 @@ def build_processes(net: ReactionNetwork, dilution: float,
                     procs.append(Process(
                         rate=k, participants=parts,
                         offsets=_mk_offsets(list(parts)), delta=delta,
-                        kind="channel", channel=r))
+                        kind="channel", channel=r,
+                        func_boost=boost))
     if dilution > 0:
         for i in sorted(net.food):
             if net.food_inlet[i] > 0:
@@ -106,7 +136,12 @@ def build_processes(net: ReactionNetwork, dilution: float,
 
 
 def hazard(p: Process, n: np.ndarray, volume: float) -> float:
-    """h = k * V^{1-m} * prod_p (n_{i_p} - offset_p); zero if infeasible."""
+    """h = k * V^{1-m} * prod_p (n_{i_p} - offset_p); zero if infeasible.
+
+    func_boost processes additionally multiply by (n_c/V)^power —
+    positive for any n_c > 0, zero at n_c = 0 (unlike the participants
+    falling factorial, which also vanishes at 0 < n_c < p).
+    """
     h = p.rate
     m = len(p.participants)
     for pos, s in enumerate(p.participants):
@@ -118,6 +153,11 @@ def hazard(p: Process, n: np.ndarray, volume: float) -> float:
         h *= volume ** (1 - m)
     else:
         h *= volume  # zeroth-order influx: conc/time * V
+    if p.func_boost is not None:
+        c, pw = p.func_boost
+        if n[c] <= 0:
+            return 0.0
+        h *= (n[c] / volume) ** pw
     return h
 
 
@@ -161,12 +201,14 @@ def simulate(
     max_events: int = 5_000_000,
     record_dt: float | None = None,
     observers: tuple = (),
+    hazard_mode: str = "participants",
 ) -> SSAResult:
-    """Run the exact SSA. See module docstring for conventions."""
+    """Run the exact SSA. See module docstring for conventions and
+    `build_processes` for the hazard_mode catalysis convention."""
     rng = np.random.default_rng(seed)
     if eps is None:
         eps = net.eps
-    procs = build_processes(net, dilution, eps)
+    procs = build_processes(net, dilution, eps, hazard_mode=hazard_mode)
     n_species = net.n_species
 
     if n0 is None:
@@ -239,5 +281,6 @@ def simulate(
         censor_time=t, final_counts=n.copy(),
         net_hash=net.hash, seed_key=str(seed),
         diagnostics={"dilution": dilution, "volume": volume, "eps": eps,
+                     "hazard_mode": hazard_mode,
                      "max_events": max_events, "record_dt": record_dt},
     )

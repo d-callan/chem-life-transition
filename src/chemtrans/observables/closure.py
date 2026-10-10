@@ -85,6 +85,7 @@ def kinetic_accessible(net: ReactionNetwork) -> set[int]:
     """
     avail = set(net.food)
     accessible: set[int] = set()
+    eps0 = net.eps == 0
     changed = True
     while changed:
         changed = False
@@ -93,13 +94,28 @@ def kinetic_accessible(net: ReactionNetwork) -> set[int]:
                 continue
             if ch.k_f <= 0 and ch.k_r <= 0:
                 continue
-            if not all(i in avail for i, _ in ch.reactants):
-                continue
-            if net.eps == 0 and ch.synth and ch.synth_dir != "rev" \
-                    and not any(c in avail for c in ch.catalysts):
+            # channels are reversible: a channel can fire forward when
+            # its reactants are reachable, or in REVERSE when its
+            # products are reachable (reverse flux produces reactants).
+            # eps gates apply per direction at eps=0: "both" gates both,
+            # "fwd" gates forward only, "rev" gates reverse only.
+            fwd_gated = eps0 and ch.synth and ch.synth_dir != "rev"
+            rev_gated = eps0 and ch.synth and ch.synth_dir != "fwd"
+            cat_ok = any(c in avail for c in ch.catalysts)
+            fwd_ok = (ch.k_f > 0
+                      and all(i in avail for i, _ in ch.reactants)
+                      and not (fwd_gated and not cat_ok))
+            rev_ok = (ch.k_r > 0
+                      and all(i in avail for i, _ in ch.products)
+                      and not (rev_gated and not cat_ok))
+            if not (fwd_ok or rev_ok):
                 continue
             accessible.add(r)
-            new = {i for i, _ in ch.products} - avail
+            new = set()
+            if fwd_ok:
+                new |= {i for i, _ in ch.products} - avail
+            if rev_ok:
+                new |= {i for i, _ in ch.reactants} - avail
             if new:
                 avail |= new
                 changed = True

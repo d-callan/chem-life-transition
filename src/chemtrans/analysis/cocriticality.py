@@ -272,7 +272,8 @@ def coincidence_report(by_net: dict[str, list[dict]],
                        observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
                        n_boot: int = 400, seed: int = 0,
                        tol_pair: float | None = None,
-                       exact_table_max: int = 12) -> dict:
+                       exact_table_max: int = 12,
+                       min_pairs: int = 3) -> dict:
     """Pairwise coincidence matrix from PER-FAMILY paired λc diffs.
 
     tol_pair: equivalence margin in λ units. None -> 2x median grid
@@ -320,6 +321,14 @@ def coincidence_report(by_net: dict[str, list[dict]],
             if n_pairs == 0:
                 entry["verdict"] = ("discordant_direction"
                                     if dir_mismatch else "incomparable")
+            elif n_pairs < min_pairs:
+                # below the evidence floor no equivalence or separation
+                # claim is defensible — report the diffs but do not
+                # pronounce on coincidence
+                entry.update({"verdict": "insufficient_families",
+                              "n_pairs": n_pairs,
+                              "min_pairs": min_pairs,
+                              "estimator": "exact_table"})
             elif n_pairs <= exact_table_max:
                 d = np.asarray(list(diffs.values()))
                 mx, mn = float(np.abs(d).max()), float(np.abs(d).min())
@@ -372,7 +381,7 @@ def coincidence_report(by_net: dict[str, list[dict]],
                 "detail": e.detail, "pooled": True}
             for o, e in point_ests.items()},
         "pairwise": matrix,
-        "n_families": n, "n_boot": n_boot,
+        "n_families": n, "n_boot": n_boot, "min_pairs": min_pairs,
         "tol_pair": tol_pair, "grid_resolution": grid_res,
         "note": ("verdicts use per-family paired differences, not "
                  "pooled fits; 'coincident*' is an equivalence verdict "
@@ -382,7 +391,8 @@ def coincidence_report(by_net: dict[str, list[dict]],
 
 def coincidence_2d(records: list[dict], secondary_param: str,
                    observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
-                   n_boot: int = 400, seed: int = 0) -> dict:
+                   n_boot: int = 400, seed: int = 0,
+                   min_pairs: int = 3) -> dict:
     """Perturbational co-criticality over a SECOND swept axis.
 
     The decisive gated-collinearity test: partition the records by the
@@ -422,7 +432,7 @@ def coincidence_2d(records: list[dict], secondary_param: str,
     for k in sorted(levels):
         per_level[k] = coincidence_report(
             group_by_network(levels[k]), observables,
-            n_boot=n_boot, seed=seed)
+            n_boot=n_boot, seed=seed, min_pairs=min_pairs)
 
     # union of pair keys across levels
     pairs = sorted({p for rep in per_level.values()
@@ -461,7 +471,10 @@ def coincidence_2d(records: list[dict], secondary_param: str,
                        diffs_at_levels[k])
             if n_lv >= 2:
                 n_fam_multilevel += 1
-        if n_fam_multilevel == 0:
+        # a tracking/drift verdict needs at least TWO families actually
+        # followed across >= 2 levels — with one, within-tol agreement
+        # is a single-network observation, not an ensemble result
+        if n_fam_multilevel < 2:
             verdict = "underdetermined"
         elif flat and within == len(flat):
             verdict = "tracking"

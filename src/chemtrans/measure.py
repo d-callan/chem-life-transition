@@ -176,6 +176,13 @@ def measure_run(task: dict) -> dict:
                                if det.material_error is not None
                                and np.isfinite(det.material_error)
                                else None),
+            "x_min": (float(det.diagnostics["x_min"])
+                      if det.diagnostics
+                      and np.isfinite(det.diagnostics.get(
+                          "x_min", np.nan))
+                      else None),
+            "neg_excursion": (bool(det.diagnostics["neg_excursion"])
+                              if det.diagnostics else None),
         }
         if det.converged:
             x = det.x_eq
@@ -366,6 +373,7 @@ def measure_run(task: dict) -> dict:
         comp_mass = (net.comp.sum(axis=0) if net.comp is not None
                      else np.ones(net.n_species))
         mass_floor = float(stoch.get("mass_floor", 0.01))
+        hazard_mode = str(stoch.get("hazard_mode", "participants"))
         n_seed_dropped = None
         if n0 is not None:
             n_seed_dropped = int(np.sum(
@@ -376,7 +384,8 @@ def measure_run(task: dict) -> dict:
                 net, t_max=t_max, dilution=dilution, volume=volume,
                 eps=eps, seed=seed, n0=n0,
                 max_events=int(stoch.get("max_events", 2_000_000)),
-                record_dt=float(stoch.get("record_dt", t_max / 1000)))
+                record_dt=float(stoch.get("record_dt", t_max / 1000)),
+                hazard_mode=hazard_mode)
             o = mass_raf_series(net, res.n, volume)
             nf = res.n[:, nonfood].sum(axis=1)
             # absolute nonfood monomer-mass concentration
@@ -425,6 +434,7 @@ def measure_run(task: dict) -> dict:
             "n_replicates": len(reps),
             "theta_organized": theta,
             "mass_floor": mass_floor,
+            "hazard_mode": hazard_mode,
             "n_seed_dropped": n_seed_dropped,
             "init_policy": init_policy,
         }
@@ -763,6 +773,8 @@ def _competition_block(net: ReactionNetwork, dilution: float,
     n_reps = int(cspec.get("replicates", 30))
     t_max = float(cspec.get("t_max", 400.0))
     tol = float(cspec.get("tol", 0.05))
+    hazard_mode = str(cspec.get("hazard_mode", "participants"))
+    tie_margin = float(cspec.get("tie_margin", tol))
 
     # caller may nominate the competing attractor pair (cluster ids as
     # strings); default is the first two certified attractors
@@ -784,6 +796,7 @@ def _competition_block(net: ReactionNetwork, dilution: float,
     out = {"completed": True, "volume": volume, "n_reps": n_reps,
            "attractor_pair": c_pair,
            "attractor_labels": ms_block["attractor_top_species"],
+           "hazard_mode": hazard_mode,
            "protocols": {}}
     for pname, n0f in (
             ("raw", lambda V: gillespie.counts_from_concentration(
@@ -793,7 +806,8 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                 / np.maximum(comp_mass, 1.0)
                 + net.food_inlet, V))):
         n0 = n0f(volume)
-        counts = {"A": 0, "B": 0, "dead": 0, "other": 0}
+        counts = {"A": 0, "B": 0, "dead": 0, "other": 0,
+                  "undecided": 0}
         rep_rows = []
         for rep in range(n_reps):
             seed = derive_seed(f"{seed_key}|comp|{pname}|{rep}")
@@ -801,7 +815,8 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                 net, t_max=t_max, dilution=dilution, volume=volume,
                 n0=n0, eps=eps, seed=seed,
                 max_events=int(cspec.get("max_events", 4_000_000)),
-                record_dt=t_max / 500)
+                record_dt=t_max / 500,
+                hazard_mode=hazard_mode)
             xf = res.final_counts / volume
             if _nonfood_mass(net, xf) < min_mass:
                 label = "dead"
@@ -809,8 +824,16 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                 sf = heredity.attractor_signature(net, xf)
                 d = [heredity.compositional_distance(sf, s)
                      for s in sigs]
-                label = ("A" if d[0] <= d[1] else "B") \
-                    if min(d) <= tol * 4 else "other"
+                if min(d) > tol * 4:
+                    label = "other"
+                elif abs(d[0] - d[1]) <= tie_margin:
+                    # terminal composition sits (near-)equidistant
+                    # between the attractors — an undecided replicate,
+                    # not a coin-flip win for whichever lineage was
+                    # indexed first (was: d[0] <= d[1] -> "A")
+                    label = "undecided"
+                else:
+                    label = "A" if d[0] < d[1] else "B"
             counts[label] += 1
             rep_rows.append({"seed": seed, "winner": label,
                              "truncated": res.truncated,
@@ -822,6 +845,8 @@ def _competition_block(net: ReactionNetwork, dilution: float,
             "p_a_wins": (counts["A"] / n_ab if n_ab else None),
             "p_extinct": counts["dead"] / n_total,
             "p_other": counts["other"] / n_total,
+            "p_undecided": counts["undecided"] / n_total,
+            "tie_margin": tie_margin,
             "reps": rep_rows}
     # headline: raw protocol asymmetry (None if undecided)
     raw = out["protocols"]["raw"]

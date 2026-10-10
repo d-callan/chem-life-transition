@@ -296,3 +296,66 @@ def test_sd_multipliers_none_on_failure(monkeypatch):
     out = ode.sd_fixed_point_multipliers(
         net, net.food_inlet.copy(), tau=1.0, d_factor=2.0, eps=0.01)
     assert out is None
+
+
+def test_jacobian_matches_unclipped_rate_law():
+    """d/dx_c of kappa*x_c^p is p*x_c^(p-1) at ANY x — including
+    negative solver excursions (Invariant 4: no clip inside the VF).
+    Under the old np.maximum clip the analytic derivative was 0 while
+    the FD of the (already unclipped) rate law was nonzero."""
+    net = polymer_network(
+        alphabet_size=2, max_len=3, p_cat=1.0, kappa=5.0,
+        cat_power=2, eps=0.05, seed=7)
+    assert any(len(ch.catalysts) for ch in net.channels)
+    x = np.full(net.n_species, 0.5)
+    cat_idx = next(i for ch in net.channels for i in ch.catalysts)
+    x[cat_idx] = -0.4        # negative catalyst excursion
+    Df, Db = net.d_rates(x, eps=0.05)
+    h = 1e-7
+    xp, xm = x.copy(), x.copy()
+    xp[cat_idx] += h
+    xm[cat_idx] -= h
+    rfp, rbp = net.rates(xp, eps=0.05)
+    rfm, rbm = net.rates(xm, eps=0.05)
+    fd_f = (rfp - rfm) / (2 * h)
+    fd_b = (rbp - rbm) / (2 * h)
+    Df_d = Df.toarray() if hasattr(Df, "toarray") else Df
+    Db_d = Db.toarray() if hasattr(Db, "toarray") else Db
+    # at least one channel sees a nonzero analytic derivative at
+    # negative x_c — impossible under clipping
+    assert np.abs(Df_d[:, cat_idx]).max() > 0
+    np.testing.assert_allclose(Df_d[:, cat_idx], fd_f, rtol=1e-5,
+                               atol=1e-7)
+    np.testing.assert_allclose(Db_d[:, cat_idx], fd_b, rtol=1e-5,
+                               atol=1e-7)
+
+
+def test_integrate_reports_negativity_diagnostics():
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+    res = ode.integrate_cstr(net, dilution=0.1, t_max=200.0)
+    assert "x_min" in res.diagnostics
+    assert "neg_excursion" in res.diagnostics
+    # physical run: no excursion flagged
+    assert res.diagnostics["neg_excursion"] is False
+    assert res.diagnostics["x_min"] >= -res.diagnostics["neg_tol"]
+
+
+def test_sd_map_negative_endpoint_is_failure(monkeypatch):
+    """A solver-completed batch whose endpoint is significantly
+    negative must fail loudly — never clipped into ends[]."""
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+
+    class _Neg:
+        success = True
+        message = "ok"
+        y = np.full((net.n_species, 5), 0.1)
+
+    neg = _Neg()
+    neg.y[0, -1] = -0.5
+    monkeypatch.setattr(ode, "solve_ivp", lambda *a, **k: neg)
+    _, ends, ok, msg = ode.sd_map(
+        net, net.food_inlet.copy(), tau=1.0, d_factor=2.0, n_cycles=2)
+    assert not ok and "unphysical" in msg
+    assert ends.shape[0] == 0   # failed cycle's state not recorded

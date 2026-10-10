@@ -157,7 +157,12 @@ def schlogl(
     return ReactionNetwork(
         species, channels, food,
         comp=comp, g=g, food_inlet=food_inlet, kappa=kappa, eps=1.0,
-        params={"generator": "schlogl", "a_in": a_in, "b_in": b_in,
+        # reservoir channels create/consume X without consuming the
+        # catalyst-role reservoirs — an intentionally OPEN system;
+        # declared so letter-conservation checks report the design
+        # instead of a silent invariant violation
+        params={"generator": "schlogl", "open_system": True,
+                "a_in": a_in, "b_in": b_in,
                 "k1": k1, "k2": k2, "k3": k3, "k4": k4,
                 "kappa": kappa},
     )
@@ -175,10 +180,16 @@ def immigration_death(k_birth: float = 2.0, k_death: float = 0.5,
     food = (0,)
     food_inlet = np.array([f_inlet, 0.0])
     comp = np.array([[1.0, 1.0]])
-    g = np.zeros(2)
+    # Invariant 2: k_r must be consistent with species free energies —
+    # k_f/k_r = exp(-(g_X - g_F)). With g_F = 0 the rate ratio implies
+    # g_X = -ln(k_birth/k_death); a zero death rate is a declared
+    # driven-limit boundary instead.
+    driven = k_death <= 0
+    g = np.array([0.0, -np.log(k_birth / k_death)]) if not driven \
+        else np.zeros(2)
     channels = [
         Channel(reactants=((0, 1),), products=((1, 1),),
-                k_f=k_birth, k_r=k_death, synth=False,
+                k_f=k_birth, k_r=k_death, synth=False, driven=driven,
                 mechanism="immigration_death"),
     ]
     return ReactionNetwork(

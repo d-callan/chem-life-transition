@@ -97,7 +97,15 @@ def write_manifest(protocol: dict, cdir: Path):
         "created": time.time(),
         "decisions": {
             "order_parameter": "mass_raf",
-            "theta_hi": 0.6, "theta_lo": 0.4,
+            # the ACTUAL stochastic detection thresholds measure_run
+            # applies (task.stochastic defaults at runtime), not
+            # boilerplate — sweeps may override per task
+            "theta_organized": float(
+                (protocol.get("task", {}).get("stochastic") or {})
+                .get("theta_organized", 0.1)),
+            "mass_floor": float(
+                (protocol.get("task", {}).get("stochastic") or {})
+                .get("mass_floor", 0.01)),
             "init_policy": "round",
             "primary_experiment": protocol["experiment"],
         },
@@ -171,6 +179,8 @@ def cmd_validate(args):
         if net.comp is not None:
             lc = net.check_letter_conservation()
             check["letter_conservation"] = lc["ok"]
+            if lc.get("declared_open"):
+                check["declared_open_system"] = True
             # sparse-safe: (S.T @ comp.T).T avoids a dense@sparse product
             S = net.stoichiometry()
             res = (np.asarray(S.T @ net.comp.T).T
@@ -411,15 +421,24 @@ def cmd_summarize(args):
                             "direction": direction}
             r.setdefault(
                 "family_id", f"{r.get('seed_key')}|{r['net_hash']}")
-        summary["cocriticality"] = cc.coincidence_report(
-            cc.group_by_network(records),
-            n_boot=int(args.boot))
         secondary = manifest["protocol"].get("secondary_axis")
         if secondary:
             if isinstance(secondary, str):
                 secondary = {"param": secondary}
             summary["cocriticality_2d"] = cc.coincidence_2d(
                 records, secondary["param"],
+                n_boot=int(args.boot))
+            # a pooled 1D report would flatten every secondary level
+            # into each family's lambda-series — mixing heterogeneous
+            # kinetic regimes. Per-level 1D reports live inside
+            # cocriticality_2d["per_level"].
+            summary["cocriticality"] = {
+                "status": "suppressed",
+                "reason": "secondary_axis declared; per-level reports "
+                          "in cocriticality_2d.per_level"}
+        else:
+            summary["cocriticality"] = cc.coincidence_report(
+                cc.group_by_network(records),
                 n_boot=int(args.boot))
 
     (cdir / "summary.json").write_text(
@@ -451,6 +470,17 @@ def cmd_zoom(args):
 
     fam_ests = (summary.get("cocriticality") or {}).get(
         "family_estimates") or {}
+    if not fam_ests:
+        # 2D campaign: the pooled 1D block is suppressed — union the
+        # per-level family estimates instead. Each level's estimates
+        # were computed on unflattened data; unioning only widens the
+        # refinement envelope (conservative for bracketing).
+        for lvl, rep in ((summary.get("cocriticality_2d") or {})
+                         .get("per_level") or {}).items():
+            for obs, fams in (rep.get("family_estimates") or {}).items():
+                for fam, e in fams.items():
+                    fam_ests.setdefault(obs, {})[
+                        f"{fam}@k={lvl}"] = e
     # map record-path order parameters to the life-vector observable
     # that brackets the same transition
     op_map = {"equilibrium.m_poly": "O_maint", "mass_raf": "O_maint",

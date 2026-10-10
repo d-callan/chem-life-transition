@@ -96,16 +96,23 @@ def species_assembly(net, species_index: int,
 def null_ma_distribution(rng: np.random.Generator, length: int,
                          alphabet_size: int = 2,
                          n_samples: int = 500,
+                         alphabet: str | None = None,
                          **kw) -> np.ndarray:
     """Null MA distribution for random strings of the given length.
 
     The null is "random string of same length over same alphabet" — the
     threshold is therefore length-conditional, not a fixed cutoff.
+    `alphabet` overrides the letter set; default is the network
+    convention A, B, C, ... (chr(65+i)) for `alphabet_size` letters.
     """
+    if alphabet is None:
+        if alphabet_size < 1 or alphabet_size > 26:
+            raise ValueError("alphabet_size must be in [1, 26] or pass "
+                             "an explicit `alphabet` string")
+        alphabet = "".join(chr(65 + i) for i in range(alphabet_size))
     out = np.empty(n_samples)
     for i in range(n_samples):
-        s = "".join(rng.choice(list("01"[:alphabet_size]),
-                               size=length))
+        s = "".join(rng.choice(list(alphabet), size=length))
         out[i], _ = assembly_index(s, **kw)
     return out
 

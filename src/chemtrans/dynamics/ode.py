@@ -86,14 +86,17 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
     nfev = 0
 
     def rhs(y):
-        return rhs_cstr(net, np.maximum(y, 0.0), dilution, eps)
+        return rhs_cstr(net, y, dilution, eps)
 
     def jac(y):
-        return net.jacobian(np.maximum(y, 0.0), dilution, eps)
+        return net.jacobian(y, dilution, eps)
 
     def resid_ok(x):
+        # a root in the negative orthant is a root of the polynomial
+        # dynamics but not a physical equilibrium — reject it
         r = _scaled_residual(rhs(x), x, conv_atol, conv_rtol)
-        return r, bool(np.all(r <= 1.0) and np.all(np.isfinite(x)))
+        return r, bool(np.all(r <= 1.0) and np.all(np.isfinite(x))
+                       and x.min() >= -conv_atol)
 
     x = np.maximum(np.asarray(x0, float), 0.0)
     best_x, best_r = x, resid_ok(x)[0]
@@ -151,9 +154,9 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
                 break
         return x, spent
 
-    x_ptc, _ = ptc(x)
+    x_ptc, spent_ptc = ptc(x)
     r, ok = resid_ok(x_ptc)
-    nfev += 200
+    nfev += spent_ptc
     if np.nanmax(r) < np.nanmax(best_r):
         best_x, best_r = x_ptc, r
     if ok:
@@ -168,7 +171,9 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
                             xtol=1e-11, ftol=1e-11, gtol=1e-11,
                             max_nfev=300)
         nfev += int(sol.nfev)
-        xp = np.maximum(sol.x, 0.0)
+        # no clip on the polish result: resid_ok rejects negative-
+        # orthant roots rather than projecting them into existence
+        xp = sol.x
         r, ok = resid_ok(xp)
         if np.nanmax(r) < np.nanmax(best_r):
             best_x, best_r = xp, r
@@ -198,6 +203,7 @@ def integrate_cstr(
     n_chunks: int = 8,
     polish: bool = True,
     osc_amp_tol: float = 0.05,
+    neg_tol: float = 1e-6,
 ) -> ODEResult:
     """Integrate CSTR to convergence in chunks, then certify.
 
@@ -242,10 +248,14 @@ def integrate_cstr(
                          xk if ok else None, eps, dilution)
 
     def rhs(t, y):
-        return rhs_cstr(net, np.maximum(y, 0.0), dilution, eps)
+        # vector field evaluated at the TRUE state — never clipped
+        # (Invariant 4). The rate law is polynomial in x, so it is
+        # well-defined for negative y; sustained negativity is a real
+        # solver excursion and is flagged below, not hidden.
+        return rhs_cstr(net, y, dilution, eps)
 
     def jac(t, y):
-        return net.jacobian(np.maximum(y, 0.0), dilution, eps)
+        return net.jacobian(y, dilution, eps)
 
     ts: list[np.ndarray] = []
     xs: list[np.ndarray] = []
@@ -275,7 +285,14 @@ def integrate_cstr(
                              None, None, eps, dilution)
         ts.append(sol.t)
         xs.append(sol.y.T)
-        x_new = np.maximum(sol.y[:, -1], 0.0)
+        # raw endpoint — no positivity clipping (Invariant 4): a
+        # significantly negative state is a real unphysical excursion
+        # and must surface, not be silently repaired to zero
+        x_new = sol.y[:, -1]
+        if x_new.min() < -neg_tol:
+            x = x_new
+            t = float(sol.t[-1])
+            break
 
         resid = _scaled_residual(rhs(t, x_new), x_new, conv_atol, conv_rtol)
         wchange = float(
@@ -326,27 +343,27 @@ def integrate_cstr(
             # sparse Jacobian by products, never factors it
             from scipy.optimize import least_squares
             sol_ls = least_squares(
-                lambda y: rhs_cstr(net, np.maximum(y, 0.0),
-                                   dilution, eps),
+                lambda y: rhs_cstr(net, y, dilution, eps),
                 x,
-                jac=lambda y: net.jacobian(np.maximum(y, 0.0),
-                                           dilution, eps),
+                jac=lambda y: net.jacobian(y, dilution, eps),
                 method="trf", tr_solver="lsmr",
                 xtol=1e-11, ftol=1e-11, gtol=1e-11, max_nfev=300)
-            xp = np.maximum(sol_ls.x, 0.0)
+            xp = sol_ls.x
             polish_ok = bool(sol_ls.success)   # lsmr can exit unconverged
         else:
             sol = scipy_root(
-                lambda y: rhs_cstr(net, np.maximum(y, 0.0),
-                                   dilution, eps),
-                x, jac=lambda y: net.jacobian(np.maximum(y, 0.0),
-                                              dilution, eps),
+                lambda y: rhs_cstr(net, y, dilution, eps),
+                x, jac=lambda y: net.jacobian(y, dilution, eps),
                 method="hybr")
-            xp, polish_ok = np.maximum(sol.x, 0.0), bool(sol.success)
+            xp, polish_ok = sol.x, bool(sol.success)
         pr = _scaled_residual(rhs_cstr(net, xp, dilution, eps),
                               xp, conv_atol, conv_rtol)
+        # a polished root with significantly negative components is a
+        # root of the polynomial dynamics, not a physical equilibrium —
+        # reject rather than clip it into existence
         polished = bool(polish_ok and np.all(pr <= 1.0)
-                        and np.all(np.isfinite(xp)))
+                        and np.all(np.isfinite(xp))
+                        and xp.min() >= -neg_tol)
         if polished:
             x, resid_end, converged = xp, pr, True
         else:
@@ -356,11 +373,24 @@ def integrate_cstr(
                            "not certified")
             converged = False
 
-    if converged:
+    x_min = float(X.min()) if X.size else float(x.min())
+    if converged and x.min() >= -neg_tol:
         x_eq = x
         ttype = "STATIONARY"
         message = ("converged (componentwise residual + window"
                    + (", root-polished" if polished else "") + ")")
+        if x_min < -neg_tol:
+            # certified root, but the trajectory crossed unphysical
+            # (negative) territory to reach it — surface the excursion
+            # in message + diagnostics rather than hiding it
+            message += (f" [transient negative excursion "
+                        f"x_min={x_min:.2e}]")
+    elif x.min() < -neg_tol:
+        ttype = "UNRESOLVED"
+        message = (f"negative concentration excursion "
+                   f"(x_min={x_min:.2e} <= -neg_tol={neg_tol:g}): "
+                   f"trajectory or endpoint left the physical "
+                   f"orthant; state not certified")
     elif (not np.all(np.isfinite(resid_end))
           or not np.all(np.isfinite(X))
           or np.max(np.abs(x)) > 1e10):
@@ -406,7 +436,11 @@ def integrate_cstr(
 
     return ODEResult(t_all, X, True, message, nfev, ttype, resid_end,
                      float(wchange) if 'wchange' in dir() else np.nan,
-                     mat_err, x_eq, eps, dilution)
+                     mat_err, x_eq, eps, dilution,
+                     diagnostics={
+                         "x_min": x_min,
+                         "neg_tol": neg_tol,
+                         "neg_excursion": bool(x_min < -neg_tol)})
 
 
 def sd_step(net: ReactionNetwork, x: np.ndarray, d_factor: float) -> np.ndarray:
@@ -431,6 +465,7 @@ def sd_map(
     d_factor: float,
     n_cycles: int,
     eps: float | None = None,
+    neg_tol: float = 1e-6,
 ) -> tuple[np.ndarray, np.ndarray, bool, str]:
     """Iterate the SD map: integrate closed batch for tau, then dilute.
 
@@ -438,7 +473,9 @@ def sd_map(
     post-dilution / end-of-batch states of cycle i. On solver failure,
     returns the cycles completed so far with ok=False — callers must
     emit UNRESOLVED records rather than crash (mirrors the CSTR
-    solver-failure contract)."""
+    solver-failure contract). Batch endpoints significantly negative
+    (x < -neg_tol) are real unphysical excursions — reported as
+    failure, never clipped to zero (Invariant 4)."""
     if eps is None:
         eps = net.eps
     x = np.asarray(x0, dtype=float).copy()
@@ -448,18 +485,22 @@ def sd_map(
     for c in range(n_cycles):
         starts[c] = x
         sol = solve_ivp(
-            lambda t, y: net.stoichiometry()
-            @ net.net_flux(np.maximum(y, 0.0), eps),
+            lambda t, y: net.stoichiometry() @ net.net_flux(y, eps),
             (0.0, tau), np.maximum(x, 0.0),
             method=method,
-            jac=lambda t, y: net.jacobian(np.maximum(y, 0.0), 0.0, eps),
+            jac=lambda t, y: net.jacobian(y, 0.0, eps),
             rtol=1e-8, atol=1e-11,
         )
         if not sol.success:
             return (starts[:c], ends[:c], False,
                     (f"SD batch integration failed at cycle {c}: "
                      f"{sol.message}"))
-        ends[c] = np.maximum(sol.y[:, -1], 0.0)
+        x_end = sol.y[:, -1]
+        if x_end.min() < -neg_tol:
+            return (starts[:c], ends[:c], False,
+                    (f"SD batch reached unphysical state at cycle {c} "
+                     f"(x_min={float(x_end.min()):.2e})"))
+        ends[c] = x_end
         x = sd_step(net, ends[c], d_factor)
     return starts, ends, True, "ok"
 
@@ -482,14 +523,13 @@ def sd_fixed_point_multipliers(
 
     def one_cycle(x):
         sol = solve_ivp(
-            lambda t, y: net.stoichiometry()
-            @ net.net_flux(np.maximum(y, 0.0), eps),
+            lambda t, y: net.stoichiometry() @ net.net_flux(y, eps),
             (0.0, tau), np.maximum(x, 0.0), method="LSODA",
             rtol=1e-9, atol=1e-12)
-        if not sol.success:
+        if not sol.success or sol.y[:, -1].min() < -1e-6:
             failed["flag"] = True
             return sd_step(net, np.maximum(x, 0.0), d_factor)
-        return sd_step(net, np.maximum(sol.y[:, -1], 0.0), d_factor)
+        return sd_step(net, sol.y[:, -1], d_factor)
 
     J = np.empty((n, n))
     f0 = one_cycle(x_star)

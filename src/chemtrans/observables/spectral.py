@@ -29,7 +29,10 @@ def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
     subset may be missing the leading unstable eigenvalue, so a
     truncated spectrum must never be used to certify stability.
     """
-    J = net.jacobian(np.maximum(np.asarray(x, float), 0.0), dilution, eps)
+    # Jacobian at the TRUE state — no positivity clip (Invariant 4).
+    # Callers certify x_eq only at nonnegativity tolerance, so spectral
+    # diagnostics reflect the real linearization, not a clipped field.
+    J = net.jacobian(np.asarray(x, float), dilution, eps)
     if net.use_sparse:
         import scipy.sparse.linalg as spla
         n = net.n_species

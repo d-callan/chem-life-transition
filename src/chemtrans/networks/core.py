@@ -403,9 +403,11 @@ class ReactionNetwork:
             # catalysts contribute via boost: d(k*mass*kappa*x_c^p)/dx_c
             cat_idx = np.nonzero(C[r])[0]
             if len(cat_idx):
+                # derivative of kappa * x_c^p is p * x_c^(p-1) — raw
+                # power, matching the unclipped rate law in rates();
+                # integer cat_power keeps this finite at any real x
                 dpow = (self.cat_power
-                        * np.power(np.maximum(x[cat_idx], 0.0),
-                                   self.cat_power - 1))
+                        * np.power(x[cat_idx], self.cat_power - 1))
                 Df[r, cat_idx] += kf[r] * mf[r] * self.kappa * dpow
                 Db[r, cat_idx] += kr[r] * mr[r] * self.kappa * dpow
         return Df, Db
@@ -466,7 +468,7 @@ class ReactionNetwork:
             if not mask.any():
                 continue
             dpow = (self.cat_power
-                    * np.power(np.maximum(x[np.where(mask, c, 0)], 0.0),
+                    * np.power(x[np.where(mask, c, 0)],
                                self.cat_power - 1))
             rows_f.append(rr[mask]); cols_f.append(c[mask])
             data_f.append((kf * mf * self.kappa * dpow)[mask])
@@ -551,15 +553,24 @@ class ReactionNetwork:
 
     def check_letter_conservation(self) -> dict:
         """Per-letter conservation: comp @ S must be exactly zero for
-        internal (non-boundary) channels."""
+        internal (non-boundary) channels.
+
+        Networks declared `params["open_system"]=True` model clamped
+        reservoirs / source-sink channels that intentionally do not
+        conserve letter mass (e.g. benchmarks.schlogl). Violations are
+        still REPORTED in full, but `ok` passes — the declaration makes
+        the deliberate open-system design explicit instead of a silent
+        invariant break."""
         if self.comp is None:
             raise ValueError("no composition matrix")
+        declared = bool(self.params.get("open_system", False))
         S = self.stoichiometry()
         res = (np.asarray(S.T @ self.comp.T).T
                if self.use_sparse else self.comp @ S)
         bad = np.argwhere(np.abs(res) > 0)
         return {
-            "ok": bad.size == 0,
+            "ok": bad.size == 0 or declared,
+            "declared_open": declared,
             "violations": [
                 {"letter": int(a), "channel": int(b)} for a, b in bad
             ],
