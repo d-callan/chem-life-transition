@@ -51,7 +51,10 @@ DEFAULT_OBSERVABLES = CONTINUOUS + DISCRETE
 _LC_MAP = {"hinge": ("lc", "onset"),
            "itrans": ("lc", "onset_imperfect"),
            "fold": ("lf", "saddle_node"),
-           "sigmoid": ("lc", "crossover")}
+           "sigmoid": ("lc", "crossover"),
+           "hinge_rev": ("lc", "onset"),
+           "itrans_rev": ("lc", "onset_imperfect"),
+           "fold_rev": ("lf", "saddle_node")}
 
 
 def _fold_class(params: dict, y: np.ndarray) -> str:
@@ -131,7 +134,7 @@ def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
     detail = {"selected": sel, "aicc": _clean_aicc(fit["aicc"])}
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
-        if sel == "fold":
+        if sel in ("fold", "fold_rev"):
             # the model name is not the physics: verify the jump
             cls = _fold_class(params, y)
             detail["fold_jump"] = float(
@@ -272,6 +275,7 @@ def coincidence_report(by_net: dict[str, list[dict]],
                        observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
                        n_boot: int = 400, seed: int = 0,
                        tol_pair: float | None = None,
+                       tol_frac: float = 0.10,
                        exact_table_max: int = 12,
                        min_pairs: int = 3) -> dict:
     """Pairwise coincidence matrix from PER-FAMILY paired λc diffs.
@@ -288,11 +292,44 @@ def coincidence_report(by_net: dict[str, list[dict]],
     n = len(fams)
 
     grid_res = _grid_resolution(by_net)
-    if tol_pair is None:
+    # swept domain across all family records — the equivalence margin
+    # is reported against it so "within tol" is auditable as a
+    # fraction of the axis, not an invisible constant
+    all_lams = [float(r["control"]["lam"]) for recs in
+                by_net.values() for r in recs if r.get("control")]
+    domain = (max(all_lams) - min(all_lams)) if all_lams else None
+    tol_pair_auto = tol_pair is None
+    if tol_pair_auto:
         tol_pair = 2 * grid_res if grid_res else 0.1
+    if tol_pair_auto and domain and domain > 0:
+        # bound the margin to a fraction of the swept domain: a bare
+        # 2x-grid-spacing default can span 30-40% of the axis on
+        # coarse grids, calling macroscopically separated transitions
+        # "coincident_within_tol" (review §3.5). Never below one grid
+        # step — finer coincidence is unresolvable on this grid.
+        tol_pair = float(min(tol_pair, max(tol_frac * domain,
+                                          grid_res or 0.0)))
+    tol_frac_of_domain = (tol_pair / domain) if domain else None
 
     per_fam = {o: lc_by_family(by_net, o, seed) for o in observables}
     point_ests = {o: _lc_for_obs(by_net, o, seed) for o in observables}
+
+    # survivorship-bias visibility: count how many records per family
+    # never produced a defined observable (non-STATIONARY, truncated,
+    # missing x_eq). A λc fit on the survivors hides exactly the
+    # critical-region dropouts where the discriminating signal lives.
+    coverage: dict = {}
+    for o in observables:
+        cov = {}
+        for h, recs in by_net.items():
+            n_def = 0
+            for r in recs:
+                comp = (r.get("life_vector") or {}).get(o) or {}
+                if comp.get("defined") and comp.get("value") is not None:
+                    n_def += 1
+            cov[h] = {"n_defined": n_def,
+                      "n_dropped": len(recs) - n_def}
+        coverage[o] = cov
 
     matrix = {}
     for j, oj in enumerate(observables):
@@ -381,8 +418,14 @@ def coincidence_report(by_net: dict[str, list[dict]],
                 "detail": e.detail, "pooled": True}
             for o, e in point_ests.items()},
         "pairwise": matrix,
+        "n_pairwise_tests": len(matrix),
+        "multiple_testing": ("uncorrected — per-cell verdicts; no "
+                             "FWER/FDR control applied"),
+        "coverage": coverage,
         "n_families": n, "n_boot": n_boot, "min_pairs": min_pairs,
         "tol_pair": tol_pair, "grid_resolution": grid_res,
+        "tol_pair_frac_of_domain": tol_frac_of_domain,
+        "swept_domain": domain,
         "note": ("verdicts use per-family paired differences, not "
                  "pooled fits; 'coincident*' is an equivalence verdict "
                  "inside tol_pair, not failure-to-reject"),
@@ -392,7 +435,8 @@ def coincidence_report(by_net: dict[str, list[dict]],
 def coincidence_2d(records: list[dict], secondary_param: str,
                    observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
                    n_boot: int = 400, seed: int = 0,
-                   min_pairs: int = 3) -> dict:
+                   min_pairs: int = 3,
+                   tol_frac: float = 0.10) -> dict:
     """Perturbational co-criticality over a SECOND swept axis.
 
     The decisive gated-collinearity test: partition the records by the
@@ -432,7 +476,8 @@ def coincidence_2d(records: list[dict], secondary_param: str,
     for k in sorted(levels):
         per_level[k] = coincidence_report(
             group_by_network(levels[k]), observables,
-            n_boot=n_boot, seed=seed, min_pairs=min_pairs)
+            n_boot=n_boot, seed=seed, min_pairs=min_pairs,
+            tol_frac=tol_frac)
 
     # union of pair keys across levels
     pairs = sorted({p for rep in per_level.values()

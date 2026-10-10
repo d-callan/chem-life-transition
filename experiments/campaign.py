@@ -406,6 +406,91 @@ def cmd_summarize(args):
             "selection_counts": sel_counts,
             "fits": fits_by_group}
 
+        # critical slowing down: |Re λ1| ~ |λ-λc|^ν per family on the
+        # stable branch — wires the recorded leading_eig_re into an
+        # actual exponent estimate instead of eyeballed point values.
+        # One-sided (lam > lam_c): the post-critical stable branch.
+        from chemtrans.observables import spectral as _spectral
+        csd_groups: dict = {}
+        for r in records:
+            eq = r.get("equilibrium") or {}
+            re1 = eq.get("leading_eig_re")
+            lam_v = r.get("sweep", {}).get(control)
+            if re1 is None or lam_v is None:
+                continue
+            fam = f"{r.get('seed_key')}|{r['net_hash']}"
+            sec = (float(r["sweep"][sec_param])
+                   if sec_param and sec_param in r.get("sweep", {})
+                   else None)
+            csd_groups.setdefault((fam, sec), []).append(
+                (float(lam_v), float(re1)))
+        csd: dict = {}
+        for (fam, sec), pairs in sorted(csd_groups.items()):
+            gname = (fam if sec is None
+                     else f"{fam}|{sec_param}={sec}")
+            gfit = fits_by_group.get(gname) or {}
+            lam_c = (gfit.get("params") or {}).get("lc_raw")
+            lams = np.array([p[0] for p in pairs])
+            re1 = np.array([p[1] for p in pairs])
+            if lam_c is None:
+                csd[gname] = {"status": "no_lambda_c",
+                              "n": len(pairs)}
+                continue
+            csd[gname] = _spectral.fit_slowing_down(
+                lams, re1, float(lam_c))
+            csd[gname]["lambda_c"] = float(lam_c)
+        if csd:
+            summary["slowing_down"] = csd
+
+    # persistence scaling: Kaplan-Meier per volume + extinction-scale
+    # fit across volumes — replaces eyeballing raw means of n=3-8
+    # replicates and treats truncated runs as right-censored, not
+    # events. Only emitted when stochastic records carry extinction
+    # data.
+    vol_groups: dict = {}
+    for r in records:
+        st = r.get("stochastic") or {}
+        vol = st.get("volume")
+        if vol is None:
+            continue
+        for rep in st.get("replicates") or []:
+            t_ext = rep.get("t_extinction")
+            t_cen = rep.get("censor_time")
+            if t_ext is None and t_cen is None:
+                continue
+            vol_groups.setdefault(float(vol), []).append(
+                (float(t_ext) if t_ext is not None else float(t_cen),
+                 t_ext is not None))
+    if vol_groups:
+        from chemtrans.observables import persistence as _pers
+        surv: dict = {}
+        tau_v, tau_t = [], []
+        for v, obs in sorted(vol_groups.items()):
+            tab = _pers.survival_table(obs)
+            t_k, S, _se = _pers.kaplan_meier(tab["times"], tab["events"])
+            # KM median survival — the first crossing S < 0.5; None
+            # when censoring keeps the curve above 0.5 throughout
+            med = (float(t_k[int(np.argmax(S < 0.5))])
+                   if np.any(S < 0.5) else None)
+            surv[str(v)] = {
+                "n": tab["n"], "n_events": tab["n_events"],
+                "n_censored": tab["n_censored"],
+                "median_survival": med,
+                "rmst": _pers.rmst(tab["times"], tab["events"],
+                                   float(tab["max_observed_time"]))}
+            if med is not None:
+                tau_v.append(v)
+                tau_t.append(med)
+        pers = {"per_volume": surv}
+        if len(tau_v) >= 3:
+            pers["extinction_scale"] = _pers.extinction_scale_fit(
+                np.array(tau_v), np.array(tau_t))
+        else:
+            pers["extinction_scale"] = {
+                "status": "insufficient_volumes",
+                "n_volumes_with_median": len(tau_v)}
+        summary["persistence"] = pers
+
     # co-criticality summary: per-observable λc + pairwise matrix
     if manifest["protocol"].get("summarize_mode") == "cocriticality":
         if control is None:

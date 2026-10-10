@@ -41,9 +41,25 @@ def attractor_signature(net: ReactionNetwork, x: np.ndarray) -> np.ndarray:
     return v / s if s > 0 else v
 
 
-def compositional_distance(sig_a: np.ndarray, sig_b: np.ndarray) -> float:
-    """L1 distance between signatures (bounded [0,2] -> normalized [0,1])."""
-    return float(0.5 * np.abs(np.asarray(sig_a) - np.asarray(sig_b)).sum())
+def compositional_distance(sig_a: np.ndarray, sig_b: np.ndarray
+                           ) -> float | None:
+    """L1 distance between signatures (bounded [0,2] -> normalized [0,1]).
+
+    Extinction is categorical, not compositional: a zero signature
+    (no nonfood mass) has no composition to compare. Two zero
+    signatures are the same categorical state (distance 0.0); a zero
+    vs nonzero signature returns None — an extinct endpoint is not
+    "half as far" from a lineage as an orthogonal rival, it is a
+    qualitatively different outcome. Callers must handle None.
+    """
+    a = np.asarray(sig_a, float)
+    b = np.asarray(sig_b, float)
+    za, zb = a.sum() <= 0, b.sum() <= 0
+    if za and zb:
+        return 0.0
+    if za or zb:
+        return None
+    return float(0.5 * np.abs(a - b).sum())
 
 
 def cluster_attractors(
@@ -78,23 +94,56 @@ def cluster_attractors(
     else:
         kept = list(equilibria)
     sigs = [attractor_signature(net, x) for x in kept]
-    labels = np.full(len(sigs), -1, dtype=int)
-    centers: list[np.ndarray] = []
-    center_mass: list[float] = []
-    for i, s in enumerate(sigs):
-        for c, ctr in enumerate(centers):
-            ok = compositional_distance(s, ctr) <= tol
+    n = len(sigs)
+    # Order-invariant clustering: connected components of the
+    # within-tolerance graph (single linkage). The previous greedy
+    # first-seen-center scheme depended on IC ordering — permuting the
+    # input could merge or split clusters, flipping O_hered on
+    # identical data. An edge requires composition within tol AND
+    # (when mass_ratio_tol is set) mass ratio within tolerance, so
+    # amplitude bistability still separates. Single linkage can merge
+    # through chains — that direction is conservative for
+    # multistability claims (undercounts rather than fabricates).
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            d_ij = compositional_distance(sigs[i], sigs[j])
+            ok = d_ij is not None and d_ij <= tol
             if ok and mass_ratio_tol is not None:
                 ok = (abs(np.log(max(masses[i], 1e-300)
-                                  / max(center_mass[c], 1e-300)))
+                                 / max(masses[j], 1e-300)))
                       <= np.log(mass_ratio_tol))
             if ok:
-                labels[i] = c
-                break
-        else:
-            labels[i] = len(centers)
-            centers.append(s.copy())
-            center_mass.append(masses[i])
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[rj] = ri
+    comps: dict[int, list[int]] = {}
+    for i in range(n):
+        comps.setdefault(find(i), []).append(i)
+    ordered = sorted(comps.values(), key=lambda mem: mem[0])
+    labels = np.full(n, -1, dtype=int)
+    centers: list[np.ndarray] = []
+    center_mass: list[float] = []
+    for c, members in enumerate(ordered):
+        for i in members:
+            labels[i] = c
+        # medoid signature: the member minimizing its worst distance
+        # to the rest of the component — representative, not first-seen
+        def _worst(i, members=members):
+            return max(
+                (d if (d := compositional_distance(sigs[i], sigs[j]))
+                 is not None else np.inf)
+                for j in members)
+        med = min(members, key=_worst)
+        centers.append(sigs[med].copy())
+        center_mass.append(float(np.mean([masses[i] for i in members])))
     return {
         "n_attractors": len(centers),
         "labels": labels,
@@ -103,6 +152,7 @@ def cluster_attractors(
         "members": {c: int((labels == c).sum()) for c in range(len(centers))},
         "n_input": len(equilibria),
         "n_kept": len(kept),
+        "linkage": "single",
     }
 
 
@@ -114,23 +164,39 @@ def multistability_scan(
     seed: int = 0,
     tol: float = 0.05,
     min_mass: float = 0.0,
+    n_interior: int = 4,
     **integ_kw,
 ) -> dict:
     """Integrate from varied initial conditions; cluster attractors.
 
-    ICs: food-only, food+small-random-polymer, and perturbed food-only.
+    ICs: food-only, food+small-random-polymer boundary draws, plus
+    `n_interior` interior Dirichlet draws carrying organized-scale
+    nonfood mass — boundary-only banks structurally cannot reach
+    interior attractors, so n_attractors is reported as a lower bound.
     Returns clustering plus per-IC status so inconclusive runs are
     visible rather than silently dropped.
     """
     rng = np.random.default_rng(seed)
     nonfood = np.where(~net.is_food)[0]
     ics = [net.food_inlet.copy()]
+    kinds = ["food"]
     for _ in range(n_ic - 1):
         x = net.food_inlet.copy()
         pick = rng.choice(nonfood, size=min(8, len(nonfood)),
                           replace=False)
         x[pick] = ic_scale * rng.random(len(pick))
         ics.append(x)
+        kinds.append("boundary")
+    cm_all = np.maximum(net.comp.sum(axis=0), 1e-12)
+    feed = max(float(net.feed_letters()), 0.1)
+    for _ in range(n_interior):
+        x = net.food_inlet.copy()
+        k = int(rng.integers(1, min(16, len(nonfood)) + 1))
+        pick = rng.choice(nonfood, size=k, replace=False)
+        w = rng.dirichlet(np.ones(k))
+        x[pick] = w * feed * 10 ** rng.uniform(-1.0, 0.3) / cm_all[pick]
+        ics.append(x)
+        kinds.append("interior")
 
     eqs, labels_ok, status = [], [], []
     for k, x0 in enumerate(ics):
@@ -145,9 +211,11 @@ def multistability_scan(
         "members": {}, "n_input": 0, "n_kept": 0}
     return {
         "n_attractors": cl["n_attractors"],
+        "n_attractors_semantics": "lower_bound_on_ic_bank",
         "n_certified": len(eqs),
         "n_kept": cl["n_kept"],
         "n_ics": len(ics),
+        "ic_kinds": kinds,
         "ic_status": status,
         "converged_ic": labels_ok,
         "cluster_labels": cl["labels"].tolist(),

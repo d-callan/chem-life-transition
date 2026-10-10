@@ -209,10 +209,49 @@ def measure_run(task: dict) -> dict:
                 vol = float(a_spec.get(
                     "volume",
                     (task.get("stochastic") or {}).get("volume", 1.0)))
-                rec["assembly_calibration"] = assembly.derive_a_cut(
-                    assembly.length_mass_spectrum(net, x), vol,
-                    alphabet_size=int(net.params.get("alphabet_size", 2)),
-                    copies_floor=float(a_spec.get("copies_floor", 1.0)))
+                null_src = str(a_spec.get("null_source", "abiotic"))
+                cal_kw = {
+                    "volume": vol,
+                    "alphabet_size": int(net.params.get(
+                        "alphabet_size", 2)),
+                    "copies_floor": float(a_spec.get("copies_floor",
+                                                     1.0))}
+                if null_src == "abiotic":
+                    # independent abiotic reference: same chemistry,
+                    # catalysis removed. Fitting the "null" on the
+                    # organized run under test is circular — its
+                    # spectrum is shaped by the very catalysis the
+                    # signature is meant to detect.
+                    try:
+                        net_ab = net.without_catalysis()
+                        det_ab = ode.integrate_cstr(
+                            net_ab,
+                            t_max=float(reactor.get("t_max", 200.0)),
+                            dilution=dilution, eps=eps)
+                        spectrum = (
+                            assembly.length_mass_spectrum(
+                                net_ab, det_ab.x_eq)
+                            if det_ab.converged else None)
+                    except Exception:  # noqa: BLE001 - calibration must not kill the run
+                        spectrum = None
+                    if spectrum is not None:
+                        calib = assembly.derive_a_cut(spectrum, **cal_kw)
+                        calib["null_source"] = "abiotic"
+                    else:
+                        calib = {"reason": "abiotic_null_unresolved",
+                                 "null_source": "abiotic"}
+                elif null_src == "run":
+                    # legacy self-calibration, explicitly flagged: the
+                    # null is regressed on the run being scored
+                    calib = assembly.derive_a_cut(
+                        assembly.length_mass_spectrum(net, x), **cal_kw)
+                    calib["null_source"] = "run"
+                    calib["circular"] = True
+                else:
+                    calib = {"reason": f"unknown null_source "
+                                       f"{null_src!r}",
+                             "null_source": null_src}
+                rec["assembly_calibration"] = calib
         else:
             x = det.x[-1]
             obs = closure.phi_decomposition(net, x, eps)
@@ -656,10 +695,23 @@ def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,
                 ics.append(x)
     for k in range(max(0, n_ic - len(ics))):
         x = net.food_inlet.copy()
-        scale = ic_scales[k % len(ic_scales)]
-        size = max(2, int(rng.integers(2, min(12, len(nonfood) + 1))))
-        pick = rng.choice(nonfood, size=size, replace=False)
-        x[pick] = scale * (0.1 + 0.9 * rng.random(size))
+        if k % 3 == 2:
+            # interior Dirichlet draw: organized-scale nonfood mass
+            # split over a random composition. Boundary-scale seeds
+            # cannot cross into basins that only high-mass states
+            # occupy — interior attractors are otherwise unfindable.
+            size = max(2, int(rng.integers(2, min(16, len(nonfood) + 1))))
+            pick = rng.choice(nonfood, size=size, replace=False)
+            w = rng.dirichlet(np.ones(size))
+            cm = np.maximum(net.comp.sum(axis=0)[pick], 1e-12)
+            mass = max(float(net.feed_letters()), 0.1) \
+                * 10 ** rng.uniform(-1.0, 0.3)
+            x[pick] = w * mass / cm
+        else:
+            scale = ic_scales[k % len(ic_scales)]
+            size = max(2, int(rng.integers(2, min(12, len(nonfood) + 1))))
+            pick = rng.choice(nonfood, size=size, replace=False)
+            x[pick] = scale * (0.1 + 0.9 * rng.random(size))
         ics.append(x)
     return ics
 
@@ -753,6 +805,19 @@ def _add_per_attractor_obs(net: ReactionNetwork, ms: dict,
     ms["per_attractor_obs"] = obs
 
 
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> list[float] | None:
+    """Wilson score interval for a binomial proportion — replaces the
+    bare k/n quote (29/30 reads as certainty; the CI does not)."""
+    if n <= 0:
+        return None
+    p = k / n
+    denom = 1.0 + z * z / n
+    ctr = (p + z * z / (2.0 * n)) / denom
+    half = z * float(np.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))) \
+        / denom
+    return [float(max(0.0, ctr - half)), float(min(1.0, ctr + half))]
+
+
 def _competition_block(net: ReactionNetwork, dilution: float,
                        eps: float, seed_key: str,
                        ms_block: dict | None, cspec: dict) -> dict:
@@ -793,6 +858,17 @@ def _competition_block(net: ReactionNetwork, dilution: float,
     comp_mass = (net.comp.sum(axis=0) if net.comp is not None
                  else np.ones(net.n_species))
 
+    def _label(sig_vec):
+        """Basin assignment from a composition signature; 'other' when
+        outside the acceptance radius, 'undecided' inside tie_margin."""
+        d = [v if (v := heredity.compositional_distance(sig_vec, s))
+             is not None else 1.0 for s in sigs]
+        if min(d) > tol * 4:
+            return "other", d
+        if abs(d[0] - d[1]) <= tie_margin:
+            return "undecided", d
+        return ("A" if d[0] < d[1] else "B"), d
+
     out = {"completed": True, "volume": volume, "n_reps": n_reps,
            "attractor_pair": c_pair,
            "attractor_labels": ms_block["attractor_top_species"],
@@ -822,20 +898,30 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                 label = "dead"
             else:
                 sf = heredity.attractor_signature(net, xf)
-                d = [heredity.compositional_distance(sf, s)
-                     for s in sigs]
-                if min(d) > tol * 4:
-                    label = "other"
-                elif abs(d[0] - d[1]) <= tie_margin:
-                    # terminal composition sits (near-)equidistant
-                    # between the attractors — an undecided replicate,
-                    # not a coin-flip win for whichever lineage was
-                    # indexed first (was: d[0] <= d[1] -> "A")
-                    label = "undecided"
-                else:
-                    label = "A" if d[0] < d[1] else "B"
+                label, _ = _label(sf)
             counts[label] += 1
+            # quasi-stationarity check: a truncated replicate whose
+            # basin label differs at the 75%-of-censor checkpoint was
+            # sampled mid-transit, not fixated — it cannot count as a
+            # decided win (a "dead" label is absorbing-ish and stands)
+            label_stable = None
+            if label in ("A", "B") and res.truncated:
+                i_check = int(np.searchsorted(
+                    res.t, 0.75 * res.censor_time))
+                i_check = min(i_check, len(res.n) - 1)
+                x_mid = res.n[i_check] / volume
+                if _nonfood_mass(net, x_mid) < min_mass:
+                    label_stable = False
+                else:
+                    mid_label, _ = _label(
+                        heredity.attractor_signature(net, x_mid))
+                    label_stable = mid_label == label
+                if not label_stable:
+                    counts[label] -= 1
+                    label = "undecided"
+                    counts["undecided"] += 1
             rep_rows.append({"seed": seed, "winner": label,
+                             "label_stable": label_stable,
                              "truncated": res.truncated,
                              "censor_time": res.censor_time})
         n_ab = counts["A"] + counts["B"]
@@ -843,6 +929,7 @@ def _competition_block(net: ReactionNetwork, dilution: float,
         out["protocols"][pname] = {
             "counts": counts, "n_decided": n_ab,
             "p_a_wins": (counts["A"] / n_ab if n_ab else None),
+            "p_a_wins_ci95_wilson": _wilson_ci(counts["A"], n_ab),
             "p_extinct": counts["dead"] / n_total,
             "p_other": counts["other"] / n_total,
             "p_undecided": counts["undecided"] / n_total,

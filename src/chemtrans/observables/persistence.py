@@ -108,23 +108,6 @@ def kaplan_meier(times: np.ndarray, events: np.ndarray):
     return np.array(t_knots), np.array(S), np.array(se)
 
 
-def nelson_aalen(times: np.ndarray, events: np.ndarray):
-    """Cumulative hazard estimate. Returns (t_knots, H)."""
-    times = np.asarray(times, float)
-    events = np.asarray(events, bool)
-    t_knots, H = [0.0], [0.0]
-    h = 0.0
-    for tt in np.unique(times):
-        at_risk = np.sum(times >= tt)
-        d = np.sum(events & (times == tt))
-        if at_risk == 0:
-            continue
-        h += d / at_risk
-        t_knots.append(float(tt))
-        H.append(h)
-    return np.array(t_knots), np.array(H)
-
-
 def rmst(times: np.ndarray, events: np.ndarray,
          t_star: float) -> float:
     """Restricted mean survival time: integral of KM S(t) on [0, t_star].
@@ -155,7 +138,7 @@ def survival_table(obs: list[tuple[float, bool]]) -> dict:
     return {
         "times": times,
         "events": events,
-        "n": int(len(times)),
+        "n": len(times),
         "n_events": int(events.sum()),
         "n_censored": int((~events).sum()),
         "max_observed_time": float(times.max()) if len(times) else 0.0,
@@ -173,7 +156,7 @@ def extinction_scale_fit(volumes: np.ndarray, tau: np.ndarray) -> dict:
     volumes = np.asarray(volumes, float)
     tau = np.asarray(tau, float)
     if len(volumes) < 3:
-        return {"status": "insufficient_points", "n": int(len(volumes))}
+        return {"status": "insufficient_points", "n": len(volumes)}
     y = np.log(tau)
     A = np.polyfit(volumes, y, 1)
     pred = np.polyval(A, volumes)
@@ -182,15 +165,18 @@ def extinction_scale_fit(volumes: np.ndarray, tau: np.ndarray) -> dict:
     return {"status": "ok", "slope_V": float(A[0]),
             "intercept": float(A[1]),
             "r2": 1.0 - ss_res / max(ss_tot, 1e-300),
-            "n": int(len(volumes))}
+            "n": len(volumes)}
 
 
 def nucleation_scale_fit(volumes: np.ndarray, tau: np.ndarray) -> dict:
-    """Fit tau_nuc ~ C / V^g for background-driven nucleation."""
+    """Fit tau_nuc ~ C / V^g for background-driven nucleation.
+
+    Kept for the nucleation-direction analysis only; not currently wired
+    into campaign summarization (extinction_scale_fit is)."""
     volumes = np.asarray(volumes, float)
     tau = np.asarray(tau, float)
     if len(volumes) < 3:
-        return {"status": "insufficient_points", "n": int(len(volumes))}
+        return {"status": "insufficient_points", "n": len(volumes)}
     y = np.log(tau)
     x = np.log(volumes)
     A = np.polyfit(x, y, 1)
@@ -200,4 +186,4 @@ def nucleation_scale_fit(volumes: np.ndarray, tau: np.ndarray) -> dict:
     return {"status": "ok", "gamma": float(-A[0]),
             "log_C": float(A[1]),
             "r2": 1.0 - ss_res / max(ss_tot, 1e-300),
-            "n": int(len(volumes))}
+            "n": len(volumes)}

@@ -51,43 +51,6 @@ def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
     return w[np.argsort(-w.real)], True
 
 
-def leading_rate(net: ReactionNetwork, x: np.ndarray, dilution: float,
-                 eps: float | None = None) -> float:
-    """Re(lambda) of the leading eigenvalue (<0 for stable, ->0 critical).
-
-    Returns NaN when the spectral solve did not fully converge — the
-    caller must treat the certification as unresolved rather than
-    trusting a truncated spectrum.
-    """
-    w, converged = jacobian_eigs(net, x, dilution, eps)
-    if not converged or not len(w):
-        return float("nan")
-    return float(w[0].real)
-
-
-def relaxation_rate_series(records: list[dict], lam_key: str = "lambda",
-                           x_key: str = "x_eq") -> np.ndarray:
-    """Leading relaxation rate vs control parameter, from run records.
-
-    Each record needs net (or net handle resolved by caller), lambda value,
-    and a certified x_eq. Returns array of (lam, re_lam1, n_neg_eigs,
-    converged). Rows whose spectral solve did not fully converge carry
-    re_lam1 = nan and converged = 0 — callers must not treat them as
-    stable.
-    """
-    out = []
-    for rec in records:
-        net = rec["net"]
-        x = np.asarray(rec[x_key], float)
-        w, converged = jacobian_eigs(net, x, rec["dilution"],
-                                     rec.get("eps"))
-        out.append((float(rec[lam_key]),
-                    float(w[0].real) if converged and len(w) else np.nan,
-                    int(np.sum(w.real > -1e-9)),
-                    float(converged)))
-    return np.array(out)
-
-
 def fit_slowing_down(lam: np.ndarray, re1: np.ndarray,
                      lam_c: float) -> dict:
     """Fit |Re lam1| ~ A * |lam - lam_c|^nu on the stable branch.

@@ -31,8 +31,6 @@ def test_ghost_signature_regression():
 
 def test_life_vector_undefined_semantics():
     # structural-only record: dynamical observables undefined, not 0
-    net = polymer_network(max_len=4, alphabet_size=2, p_cat=0.3,
-                          seed=3)
     rec = {"structural": {"raf_fraction_channels": 0.2,
                           "n_raf_species": 5}}
     lv = life_vector(rec)
@@ -95,9 +93,8 @@ def test_competition_mixture_init_equal_mass():
     """eq_mass protocol seeds equal monomer mass per lineage:
     mass-fraction signatures are converted to molecule concentrations
     by dividing by per-species monomer mass."""
-    from chemtrans.measure import (_multistability_block, _nonfood_mass,
-                                   derive_seed)
     from chemtrans.dynamics import gillespie
+    from chemtrans.measure import _multistability_block, _nonfood_mass, derive_seed
     net = polymer_network(**{k: v for k, v in P2_GEN.items()
                              if k != "kind"},
                           seed=derive_seed("e1land|net28|gen"))
@@ -364,3 +361,58 @@ def test_serial_transfer_failure_is_unresolved(monkeypatch):
     assert out["status"] == "UNRESOLVED"
     assert out["n_cycles_completed"] == 1
     assert len(out["dist_post_dilution"]) == 1
+
+
+def test_tol_pair_bounded_by_swept_domain():
+    """Auto equivalence margin is capped at tol_frac of the swept
+    domain — a bare 2x-grid default can span 30-40% of the axis and
+    call macroscopically separated transitions coincident."""
+    recs = _synthetic_net_series(lc=1.0)
+    rep = cc.coincidence_report(
+        cc.group_by_network(recs),
+        observables=("O_maint",), n_boot=20, seed=0)
+    # span (0.5,1.6): domain 1.1, grid_res 0.11 -> cap = max(0.11,0.11)
+    assert rep["tol_pair"] == pytest.approx(0.11, abs=1e-9)
+    assert rep["tol_pair_frac_of_domain"] == pytest.approx(0.1, abs=1e-9)
+    assert rep["swept_domain"] == pytest.approx(1.1, abs=1e-9)
+
+
+def test_coincidence_report_records_dropout_coverage():
+    """Every family must report how many records produced a defined
+    observable vs dropped out — survivorship at lambda_c made
+    visible."""
+    recs = _synthetic_net_series(lc=1.0)
+    # knock out one family's observable near the critical point
+    for r in recs:
+        if r["net_hash"] == "net0" and r["control"]["lam"] > 0.95:
+            r["life_vector"]["O_maint"] = {"defined": False,
+                                           "value": None}
+    rep = cc.coincidence_report(
+        cc.group_by_network(recs),
+        observables=("O_maint",), n_boot=20, seed=0)
+    cov = rep["coverage"]["O_maint"]["net0"]
+    assert cov["n_dropped"] == 6
+    assert cov["n_defined"] == 5
+
+
+def test_derive_cut_requires_independent_null():
+    """assembly.derive_cut must not silently regress its 'abiotic
+    null' on the organized run under test — null_source='abiotic'
+    integrates the catalysis-removed reference; 'run' is allowed only
+    as an explicitly flagged circular calibration."""
+    base = {"generator": dict(P2_GEN), "eps": 0.05,
+            "seed_key": "acut|net0",
+            "reactor": {"type": "cstr", "dilution": 0.5,
+                        "t_max": 400.0},
+            "assembly": {"derive_cut": True}}
+    rec_ab = measure_run({**base,
+                          "assembly": {"derive_cut": True,
+                                       "null_source": "abiotic"}})
+    cal = rec_ab["assembly_calibration"]
+    assert cal["null_source"] == "abiotic"
+    # self-calibration requires an explicit opt-in and is flagged
+    rec_run = measure_run({**base,
+                           "assembly": {"derive_cut": True,
+                                        "null_source": "run"}})
+    cal2 = rec_run["assembly_calibration"]
+    assert cal2["null_source"] == "run" and cal2["circular"] is True

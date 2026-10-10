@@ -6,8 +6,7 @@ import pytest
 
 from chemtrans.networks.core import Channel, ReactionNetwork
 from chemtrans.networks.generators import polymer_network
-from chemtrans.observables import (
-    assembly, closure, heredity, persistence)
+from chemtrans.observables import assembly, closure, heredity, persistence
 
 
 def raf_net():
@@ -97,7 +96,7 @@ def test_kaplan_meier_known():
     # 4 subjects: events at 2,4; censor at 3
     times = np.array([2.0, 3.0, 4.0, 6.0])
     events = np.array([True, False, True, False])
-    tk, S, se = persistence.kaplan_meier(times, events)
+    _tk, S, _se = persistence.kaplan_meier(times, events)
     assert np.isclose(S[1], 1 - 1 / 4)
     # at t=4 only 2 are still at risk (the t=3 censor left the risk set)
     assert np.isclose(S[-1], 0.75 * (1 - 1 / 2))
@@ -164,7 +163,7 @@ def test_assembly_signature_absolute_mass_floor():
     assert sig["mass_signature_abs"] == 0.0
     # but the fraction diagnostic still sees it as "high" — proving the
     # floor is what vetoes, not the fraction
-    rec = [r for r in sig["species"] if r["label"] == lab][0]
+    rec = next(r for r in sig["species"] if r["label"] == lab)
     assert rec["high_assembly"] and not rec["high_abundance"]
     assert rec["mass_fraction"] == 1.0
 
@@ -210,3 +209,48 @@ def test_derive_a_cut_vacuous():
 def test_derive_a_cut_insufficient_data():
     rec = assembly.derive_a_cut({2: 0.0, 3: 1e-9}, volume=10.0)
     assert rec["a_cut"] is None and "reason" in rec
+
+
+def test_compositional_distance_extinct_is_categorical():
+    """Extinct-vs-organized is not a composition comparison: zero
+    signatures are the same categorical state (0.0) but are
+    incomparable (None) against any organized signature — an extinct
+    endpoint must not read as 'half as far' as an orthogonal rival."""
+    sig_org = np.array([0.0, 1.0, 0.0])
+    sig_dead = np.zeros(3)
+    assert heredity.compositional_distance(sig_org, sig_dead) is None
+    assert heredity.compositional_distance(sig_dead, sig_org) is None
+    assert heredity.compositional_distance(sig_dead, sig_dead) == 0.0
+
+
+def test_cluster_attractors_order_invariant():
+    """Permuting the input must not change the partition — the greedy
+    first-center scheme could merge or split clusters on IC order."""
+    import itertools
+    net = polymer_network(alphabet_size=2, max_len=3, seed=0)
+    nf = [i for i in range(net.n_species) if not net.is_food[i]]
+
+    def mk(main, others=()):
+        x = np.zeros(net.n_species)
+        x[main] = 1.0
+        for j, f in others:
+            x[j] = f
+        return x
+
+    eqs = [mk(nf[0]),
+           mk(nf[0], [(nf[1], 0.03)]),
+           mk(nf[0], [(nf[2 if len(nf) > 2 else 1], 0.03)]),
+           mk(nf[1])]
+
+    def partition(labels, order):
+        comp = {}
+        for pos, c in enumerate(labels):
+            comp.setdefault(c, []).append(order[pos])
+        return frozenset(frozenset(v) for v in comp.values())
+
+    parts = set()
+    for perm in itertools.permutations(range(4)):
+        cl = heredity.cluster_attractors(
+            net, [eqs[i] for i in perm], tol=0.05)
+        parts.add(partition(cl["labels"], perm))
+    assert len(parts) == 1

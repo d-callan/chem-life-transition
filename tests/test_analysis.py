@@ -4,9 +4,8 @@ strict-JSON provenance, network-joint bootstrap."""
 import numpy as np
 import pytest
 
-from chemtrans.analysis.critical_points import (
-    fit_all_models, network_joint_bootstrap)
-from chemtrans.provenance import run_id, sha256_json, strict_jsonable
+from chemtrans.analysis.critical_points import fit_all_models, network_joint_bootstrap
+from chemtrans.provenance import run_id, strict_jsonable
 
 
 def test_null_selected_on_flat_data():
@@ -64,3 +63,21 @@ def test_run_id_deterministic():
     b = run_id("nethash", {"p": 1}, "seed|0")
     c = run_id("nethash", {"p": 2}, "seed|0")
     assert a == b != c
+
+
+def test_mirrored_models_recover_decreasing_transitions():
+    """Decreasing data must be fittable by onset-class models — the
+    one-sided candidate set previously handed every decreasing curve
+    to the direction-agnostic sigmoid/ramp (structural AICc bias)."""
+    lam = np.linspace(0, 4, 20)
+    # offset hinge: flat-high left, drop at lc=2.0, flat-low right
+    y_h = np.where(lam < 2.0, 0.9 - 0.35 * lam, 0.2)
+    fit = fit_all_models(lam, y_h, seed=0)
+    assert fit["selected"] == "hinge_rev"
+    assert fit["params"]["lc"] == pytest.approx(2.0, abs=0.05)
+    # backward-opening fold: jump at lf=1.5, sqrt branch below
+    y_f = np.where(lam > 1.5, 0.05,
+                   0.5 + 0.4 * np.sqrt(np.maximum(0.0, 1.5 - lam)))
+    fit = fit_all_models(lam, y_f, seed=0)
+    assert fit["selected"] == "fold_rev"
+    assert fit["params"]["lf"] == pytest.approx(1.5, abs=0.05)

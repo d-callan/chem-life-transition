@@ -72,6 +72,31 @@ def _model_preds():
                     "c_field": None},
                    [{"c0": 0.02, "A": 1.0, "lc": None,
                      "c_field": cf} for cf in (1e-4, 1e-2, 0.1)]),
+        # mirrored (offset) variants: the same transition shapes
+        # opening toward decreasing L. Without these, a monotone
+        # decreasing curve (order dying as lam grows) can only be fit
+        # by the direction-agnostic sigmoid/ramp — a structural AICc
+        # bias, not evidence for crossover physics. Same dof per pair,
+        # so the penalty is symmetric.
+        "hinge_rev": (lambda p, L: p["c0"] + p["A"] * np.maximum(
+                          0.0, p["lc"] - L),
+                      {"c0": None, "A": None, "lc": None},
+                      [{"c0": 0.02, "A": a, "lc": None}
+                       for a in (0.5, 2.0)]),
+        "fold_rev": (lambda p, L: np.where(
+                         L > p["lf"], p["c0"],
+                         p["c1"] + p["A"] * np.sqrt(
+                             np.maximum(0.0, p["lf"] - L))),
+                     {"c0": None, "c1": None, "A": None, "lf": None},
+                     [{"c0": 0.05, "c1": 0.6, "A": 0.8, "lf": None}]),
+        "itrans_rev": (lambda p, L: p["c0"] + 0.5 * p["A"] * (
+                           (p["lc"] - L) + np.sqrt(np.maximum(
+                               (p["lc"] - L) ** 2 + 4.0 * p["c_field"],
+                               0.0))),
+                       {"c0": None, "A": None, "lc": None,
+                        "c_field": None},
+                       [{"c0": 0.02, "A": 1.0, "lc": None,
+                         "c_field": cf} for cf in (1e-4, 1e-2, 0.1)]),
     }
 
 
@@ -95,6 +120,11 @@ def _bounds(model: str, lam: np.ndarray):
                  [np.inf, np.inf, np.inf, hi]),
         "itrans": ([-np.inf, 0.0, lo, 0.0],
                    [np.inf, np.inf, hi, 100.0]),
+        "hinge_rev": ([-np.inf, 0.0, lo], [np.inf, np.inf, hi]),
+        "fold_rev": ([-np.inf, -np.inf, 0.0, lo],
+                     [np.inf, np.inf, np.inf, hi]),
+        "itrans_rev": ([-np.inf, 0.0, lo, 0.0],
+                       [np.inf, np.inf, hi, 100.0]),
     }[model]
 
 
@@ -102,9 +132,8 @@ def _fit_one(model: str, lam: np.ndarray, y: np.ndarray,
              weights: np.ndarray | None = None,
              seed: int = 0) -> FitResult:
     from scipy.optimize import least_squares
-    pred_fn, proto, starts = _model_preds()[model]
+    pred_fn, _, starts = _model_preds()[model]
     keys = _free_keys(model)
-    rng = np.random.default_rng(seed)
     w = np.ones_like(y) if weights is None else np.asarray(weights, float)
 
     def unpack(v):
@@ -186,7 +215,7 @@ def fit_all_models(lam: np.ndarray, y: np.ndarray,
         "params": best.params,
         "aicc": {m: fits[m].aicc for m in order},
         "rss": {m: fits[m].rss for m in order},
-        "n": int(len(y)),
+        "n": len(y),
         "delta_aicc": {m: fits[m].aicc - best.aicc for m in order},
         "_fits": fits,
     }
