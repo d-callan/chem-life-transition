@@ -231,6 +231,32 @@ def integrate_cstr(
         xk, resid, nfev_k, ok, msg = _krylov_equilibrium(
             net, x, dilution, eps, conv_atol, conv_rtol)
         ttype = "STATIONARY" if ok else "UNRESOLVED"
+        eig_re = None
+        stability = "unchecked"
+        if ok:
+            # No trajectory on this path: the only honest dynamical
+            # certificate available is linear stability of the root.
+            # A Newton solver can polish a saddle to a root — a root
+            # with Re(lam_max) > 0 is not a stationary attractor, and
+            # a truncated ARPACK spectrum cannot certify either way.
+            from ..observables import spectral as _spectral
+            eigs, spec_conv = _spectral.jacobian_eigs(
+                net, xk, dilution, eps)
+            if not spec_conv or not len(eigs) or \
+                    not np.isfinite(eigs[0].real):
+                ttype, ok = "UNRESOLVED", False
+                msg += ("; stability unverifiable — sparse spectrum "
+                        "did not converge")
+                stability = "unverifiable"
+            elif eigs[0].real > conv_atol:
+                ttype, ok = "UNRESOLVED", False
+                msg += (f"; certified root is linearly UNSTABLE "
+                        f"(Re(lam_max)={eigs[0].real:.3e}) — likely a "
+                        f"saddle or a limit-cycle neighborhood")
+                stability = "unstable"
+            else:
+                eig_re = float(eigs[0].real)
+                stability = "linearly_stable"
         # steady-state material balance: rhs=0 implies
         # D(feed - M) + 0 = 0 is embedded in the residual; report the
         # letter-mass residual separately as the balance error
@@ -245,7 +271,13 @@ def integrate_cstr(
                          f"krylov equilibrium seek: {msg}",
                          nfev_k, ttype, resid,
                          np.nan, mat_err,
-                         xk if ok else None, eps, dilution)
+                         xk if ok else None, eps, dilution,
+                         {"stability": stability,
+                          "leading_eig_re": eig_re,
+                          "classification": (
+                              "jacobian_spectrum — no trajectory on "
+                              "the Krylov path; limit cycles around a "
+                              "stable root remain undetectable")})
 
     def rhs(t, y):
         # vector field evaluated at the TRUE state — never clipped

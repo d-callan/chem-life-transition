@@ -308,6 +308,10 @@ def cmd_summarize(args):
         eq = rec.get("equilibrium")
         if op == "mass_raf":
             return eq["mass_raf"] if eq else None
+        if op == "m_poly":
+            # nonfood monomer-mass concentration — the physical order
+            # parameter that does not saturate along organized branches
+            return eq["m_poly"] if eq else None
         if op.startswith("x_eq:"):
             return eq["x_eq"][int(op.split(":")[1])] if eq else None
         node = rec
@@ -510,9 +514,10 @@ def cmd_summarize(args):
         if secondary:
             if isinstance(secondary, str):
                 secondary = {"param": secondary}
+            lc_boot = int(manifest["protocol"].get("lc_boot", 0))
             summary["cocriticality_2d"] = cc.coincidence_2d(
                 records, secondary["param"],
-                n_boot=int(args.boot))
+                n_boot=int(args.boot), lc_boot=lc_boot)
             # a pooled 1D report would flatten every secondary level
             # into each family's lambda-series — mixing heterogeneous
             # kinetic regimes. Per-level 1D reports live inside
@@ -524,7 +529,8 @@ def cmd_summarize(args):
         else:
             summary["cocriticality"] = cc.coincidence_report(
                 cc.group_by_network(records),
-                n_boot=int(args.boot))
+                n_boot=int(args.boot),
+                lc_boot=int(manifest["protocol"].get("lc_boot", 0)))
 
     (cdir / "summary.json").write_text(
         json.dumps(strict_jsonable(summary), indent=2, sort_keys=True))

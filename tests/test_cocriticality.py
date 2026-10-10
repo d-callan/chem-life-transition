@@ -416,3 +416,60 @@ def test_derive_cut_requires_independent_null():
                                         "null_source": "run"}})
     cal2 = rec_run["assembly_calibration"]
     assert cal2["null_source"] == "run" and cal2["circular"] is True
+
+
+def test_pairwise_bootstrap_cells_carry_fdr_correction():
+    """Bootstrap-branch cells must report TOST/separation p-values AND
+    Benjamini-Hochberg q-values across the pairwise matrix."""
+    recs = _synthetic_net_series(lc=1.0, n_nets=4)
+    for r in recs:
+        lam = r["control"]["lam"]
+        r["life_vector"]["O_persist"] = {
+            "defined": True,
+            "value": float(max(0, lam - 1.4))}
+    rep = cc.coincidence_report(
+        cc.group_by_network(recs),
+        observables=("O_maint", "O_persist", "O_hered"),
+        n_boot=50, seed=1, exact_table_max=2, min_pairs=3)
+    # n_pairs=4 > exact_table_max=2 -> bootstrap branch -> p-values
+    entry = rep["pairwise"]["O_maint|O_persist"]
+    assert entry["estimator"] == "paired_bootstrap"
+    assert 0.0 <= entry["p_tost"] <= 1.0
+    assert 0.0 <= entry["p_separation"] <= 1.0
+    # BH-adjusted q values annotated on every tested cell
+    tested = [e for e in rep["pairwise"].values() if "p_tost" in e]
+    assert tested and rep["n_bootstrap_tested"] == len(tested)
+    for e in tested:
+        assert 0.0 <= e["q_tost"] <= 1.0
+        assert e["q_tost"] >= e["p_tost"] - 1e-12
+    assert "Benjamini" in rep["multiple_testing"]
+
+
+def test_ssa_event_time_observables_and_sensitivity():
+    """Stochastic block must report event-time crossings (not grid
+    times), exact dwell, and threshold-sensitivity cells from the
+    same simulated trajectories."""
+    task = {"generator": dict(P2_GEN), "eps": 0.05,
+            "seed_key": "evt|net0",
+            "reactor": {"type": "cstr", "dilution": 0.5,
+                        "t_max": 300.0},
+            "stochastic": {"enabled": True, "volume": 30.0,
+                           "replicates": 1, "t_max": 80.0,
+                           "max_events": 300_000,
+                           "record_dt": 0.5},
+            "sensitivity": {"stochastic":
+                            {"theta_organized": [0.2]}}}
+    rec = measure_run(task)
+    st = rec["stochastic"]
+    assert st["time_resolution"].startswith("event")
+    rep = st["replicates"][0]
+    assert "n_organized_toggles" in rep
+    assert 0.0 <= rep["dwell_organized"] <= 1.0
+    if rep["t_first_organized"] is not None:
+        assert rep["t_first_organized"] <= rep["censor_time"] + 1e-9
+    # sensitivity cell recorded from the same trajectory
+    sens = rec.get("sensitivity", {}).get("stochastic")
+    assert sens is not None
+    assert "0.2|0.01" in sens["cells"]
+    assert sens["primary"] == "0.1|0.01"
+    assert len(sens["cells"]["0.2|0.01"]["replicates"]) == 1

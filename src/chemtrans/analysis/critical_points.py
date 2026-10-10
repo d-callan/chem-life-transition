@@ -172,7 +172,7 @@ def _fit_one(model: str, lam: np.ndarray, y: np.ndarray,
                 sol = least_squares(
                     r, np.clip(p0, lb, ub), bounds=(lb, ub),
                     method="trf", max_nfev=4000)
-            except Exception:
+            except Exception:  # noqa: BLE001,S112 - a failed start skips to the next grid point
                 continue
             rss = float(sol.fun @ sol.fun)
             cand = (sol.x, rss)
@@ -221,6 +221,24 @@ def fit_all_models(lam: np.ndarray, y: np.ndarray,
     }
 
 
+# models that carry a critical-point parameter, and its name
+LC_PARAM = {"hinge": "lc", "itrans": "lc", "fold": "lf",
+            "sigmoid": "lc",
+            "hinge_rev": "lc", "itrans_rev": "lc", "fold_rev": "lf"}
+
+
+def lc_from_fit(fit: dict) -> float | None:
+    """Critical-point estimate from a fit_all_models result.
+
+    Returns the selected model's breakpoint parameter, or None when
+    the winner carries no changepoint (null/ramp)."""
+    key = LC_PARAM.get(fit["selected"])
+    if key is None:
+        return None
+    v = fit["params"].get(key)
+    return float(v) if v is not None else None
+
+
 def network_joint_bootstrap(
     records: list[dict],
     lam_key: str, y_key: str,
@@ -231,26 +249,60 @@ def network_joint_bootstrap(
     A record is one network's (possibly multi-lambda) measurement set.
     Resampling whole records preserves the nested trajectory structure
     and the pairing between lambda and O — unlike resampling points.
-    Returns bootstrap distribution of selected-model labels and of each
-    model's parameters; CIs are only as meaningful as n_records.
+
+    ANTI-POOLING: records are never concatenated into one scatter —
+    each resampled record is fit separately, so the output is the
+    dispersion of *per-family* critical points plus the across-family
+    spread that a pooled fit would hide. ``selection_freq`` counts
+    per-record model selections (denominator n_boot * n records drawn,
+    i.e. n_boot * n).
     """
     rng = np.random.default_rng(seed)
     n = len(records)
-    sel = []
-    par_samples: dict[str, list[dict]] = {}
+    sel_counts: dict[str, int] = {}
+    fam_lc: dict[int, list[float]] = {}
+    spread_samples: list[float] = []
+    n_fits = 0
     for _ in range(n_boot):
         idx = rng.integers(0, n, n)
-        lam = np.concatenate([np.atleast_1d(records[i][lam_key])
-                              for i in idx])
-        y = np.concatenate([np.atleast_1d(records[i][y_key])
-                            for i in idx])
-        res = fit_all_models(lam, y, seed=int(rng.integers(2**31)))
-        sel.append(res["selected"])
-        par_samples.setdefault(res["selected"], []).append(res["params"])
-    labels, counts = np.unique(sel, return_counts=True)
+        lcs = []
+        for i in idx:
+            lam_i = np.atleast_1d(records[i][lam_key])
+            y_i = np.atleast_1d(records[i][y_key])
+            res = fit_all_models(lam_i, y_i,
+                                 seed=int(rng.integers(2**31)))
+            n_fits += 1
+            sel_counts[res["selected"]] = \
+                sel_counts.get(res["selected"], 0) + 1
+            lc_i = lc_from_fit(res)
+            if lc_i is not None:
+                lcs.append(lc_i)
+                fam_lc.setdefault(int(i), []).append(lc_i)
+        uniq = sorted(set(lcs))
+        if len(uniq) >= 2:
+            spread_samples.append(uniq[-1] - uniq[0])
+    fam_summ = {}
+    for i, lcs in fam_lc.items():
+        a = np.asarray(lcs)
+        fam_summ[str(i)] = {
+            "median": float(np.median(a)),
+            "ci95": [float(q) for q in np.quantile(a, [0.025, 0.975])],
+            "n": len(lcs)}
     return {
-        "selection_freq": {l: int(c) for l, c in zip(labels, counts)},
+        "selection_freq": {m: c / max(n_fits, 1)
+                           for m, c in sel_counts.items()},
+        "selection_counts": sel_counts,
         "n_boot": n_boot,
         "n_records": n,
-        "param_samples": par_samples,
+        "n_fits": n_fits,
+        "lc_per_family": fam_summ,
+        "lc_cross_family_spread": (
+            {"median": float(np.median(spread_samples)),
+             "ci95": [float(q) for q in
+                      np.quantile(spread_samples, [0.025, 0.975])],
+             "n": len(spread_samples)}
+            if spread_samples else None),
+        "note": ("per-record fits only; no pooled curve. "
+                 "lc_cross_family_spread measures the heterogeneity a "
+                 "pooled fit would hide."),
     }

@@ -1,24 +1,24 @@
 # Scientific & Statistical Review — chem-life-transition (chemtrans 2.0)
-**Audit Cycle 5 — Post-Remediation Verification & Deep Forensic Pass**
+**Audit Cycle 6 — Post-Remediation Verification & Deep Forensic Pass**
 
-Scope: Comprehensive review of `src/`, `experiments/`, `tests/`, `runs/NOTEBOOK.md`, `docs/`, and committed `data/` artifacts. 53 critical bugs, inferential flaws, and simulation vulnerabilities have been remediated across five rounds and verified with 85 passing unit tests. This document tracks the **53 verified remediations in the closed ledger**, audits the **active defect inventory**, and details **remaining high- and critical-impact scientific and statistical issues** directly affecting the validity of results.
+Scope: Comprehensive review of `src/`, `experiments/`, `tests/`, `runs/NOTEBOOK.md`, `docs/`, and committed `data/` artifacts. 60 critical bugs, inferential flaws, and simulation vulnerabilities have been remediated across six rounds and verified with 89 passing unit tests. This document tracks the **60 verified remediations in the closed ledger**, audits the **active defect inventory**, and details **remaining high- and critical-impact scientific and statistical issues** directly affecting the validity of results.
 
 ---
 
 ## Executive Summary & Audit State
 
-| Category | Rounds 1–4 | Resolved in Round 5 | Remaining Active |
+| Category | Rounds 1–5 | Resolved in Round 6 | Remaining Active |
 |---|:---:|:---:|:---:|
-| **Correctness Bugs** | 25 | 1 | **0** |
-| **Methodological Flaws** | 16 | 6 | 8 |
-| **Statistical Weaknesses** | 3 | 2 | 6 |
-| **Total Items Tracked** | **44** | **9** | **14** |
+| **Correctness Bugs** | 26 | 0 | **0** |
+| **Methodological Flaws** | 22 | 4 | 4 |
+| **Statistical Weaknesses** | 5 | 3 | 5 |
+| **Total Items Tracked** | **53** | **7** | **9** |
 
-> **Round 5 closes the last correctness item** (`derive_a_cut` circular null → independent abiotic reference) and resolves five methodological items that produced wrong answers while running correctly: order-dependent attractor clustering, boundary-only IC coverage, extinct-state distance distortion, mid-transit competition labels, and the one-sided candidate-model bounds. The survival/scaling and critical-slowing-down machinery is no longer dead code — it is wired into `cmd_summarize`. What remains is dominated by *inference-design* weaknesses — survivorship bias at λc, AICc on noiseless data, small samples, absent UQ, and uncorrected multiple testing — plus issues requiring **campaign reruns**, not code fixes. All correctness bugs are now closed; **every remaining item either limits what the code can conclude or invalidates stored data.**
+> **Round 6 resolves the remaining wrong-answer inference machinery**: pooled network bootstrap → per-family λc dispersion; winner-take-all λc → Akaike-weighted average + bootstrap CI; uncorrected pairwise verdicts → BH-FDR on bootstrap cells; uncertified Krylov roots → spectral stability check; `record_dt`-grid observables → exact SSA event times; un-swept thresholds → in-memory sensitivity machinery; `m_poly` as the non-saturating order parameter. What remains is **inference-design fundamentals** — survivorship bias at λc, AICc on noiseless data, small samples — and items requiring **campaign reruns**, not code fixes. **All correctness bugs are closed; every remaining item limits what the code can conclude or invalidates stored data.**
 
 ### Verified Remediations (Closed Items)
-The following 53 items have been implemented and verified with tests
-(85 tests passing at Round-5 close):
+The following 60 items have been implemented and verified with tests
+(89 tests passing at Round-6 close):
 
 **Round 1 Remediations (19 items)**:
 1. **`phi_cat` power scaling (§6.1)**: `closure.phi_decomposition` now computes catalytic boost via `C @ x**cat_power`, resolving the >100% flux anomaly on $p=2$ cooperative campaigns.
@@ -85,6 +85,16 @@ The following 53 items have been implemented and verified with tests
 52. **Extinct-state categorical distance (former §2.11)**: `compositional_distance` returns `None` for organized-vs-extinct comparisons (extinction is categorical, not a composition) and `0.0` for extinct-vs-extinct; callers (`serial_transfer_test`, clustering medoid) treat `None` as non-matching rather than distance 0.5.
 53. **Competition quasi-stationarity + win-probability CI (former §2.7, §3.2)**: a truncated replicate whose basin label at the 75%-of-censor checkpoint differs from its terminal label is re-classified `undecided` (it was sampled mid-transit, not fixated); `p_a_wins` now carries a Wilson 95% CI (`p_a_wins_ci95_wilson`) computed on *decided* replicates, and `coincidence_report` annotates `n_pairwise_tests` with an explicit uncorrected-multiple-testing note.
 
+**Round 6 Remediations (7 items)**:
+
+54. **Per-family network bootstrap (former §2.6)**: `network_joint_bootstrap` no longer concatenates resampled records into one pooled scatter — each resampled record is fit separately, yielding per-family λc distributions (`lc_per_family` median/CI95) and `lc_cross_family_spread`, the heterogeneity a pooled fit concealed. `selection_freq` is now a fraction over all record-fits.
+55. **Model-averaged λc + bootstrap CI (former §2.4, §3.2)**: `estimate_lc_continuous` now emits Akaike weights, `lc_aicc_avg`, `lc_model_spread`, `winner_weight`, and `runner_up_delta_aicc` — the winner-take-all breakpoint is no longer a silent model-selection coin flip when ΔAICc < 2. An optional point-resample bootstrap (`n_boot`, wired through `lc_by_family`/`coincidence_report`/`coincidence_2d` and the `lc_boot` protocol key) reports `lc_ci95`, `lc_boot_median`, `lc_boot_n_finite`, and the resample `selection_freq` — mixing point-resample and model-selection variance.
+56. **FDR correction on pairwise verdicts (§3.3)**: bootstrap-branch cells now carry `p_tost` (max tail beyond ±`tol_pair`) and `p_separation` (two-sided across 0), with Benjamini–Hochberg `q_tost`/`q_separation` adjusted across the tested cells (`n_bootstrap_tested` reported). Exact-table cells remain deterministic classifications — annotated, not adjusted.
+57. **Krylov-path stability certification (former §2.5)**: `integrate_cstr`'s large-network equilibrium seek now classifies the certified root by its Jacobian spectrum — a linearly unstable root (saddle polished to a root) or an unverifiable ARPACK spectrum yields `UNRESOLVED` with an explicit reason instead of `STATIONARY`. Residual: limit cycles around a stable root remain undetectable without a trajectory (noted in `diagnostics.classification`).
+58. **Event-time SSA observables (former §3.5)**: the stochastic block now attaches per-(θ, floor) observers that delta-track RAF-core/non-food mass O(1) per event — `t_first_organized`, `t_extinction`, `t_absorbing`, and `dwell_organized` are recorded at exact SSA event times on the true step function, not the `record_dt` grid, plus `n_organized_toggles` (chatter indicator).
+59. **Threshold-sensitivity machinery (§3.4 partial)**: `task["sensitivity"]` re-derives threshold-dependent observables in-memory at no simulation cost — stochastic observers for every (θ, `mass_floor`) cell share the same simulated events; `_multistability_block` reclusters the same certified equilibria across the (`tol`, `min_mass`) grid, so attractor counts that flip under plausible threshold shifts are reported.
+60. **`m_poly` as a first-class order parameter (former §2.3)**: `extract_y`/`order_parameter` now accepts `"m_poly"` (nonfood monomer-mass concentration — emitted per equilibrium record), and `AGENTS.md` Invariant 5 documents `mass_raf` as the *ignition* parameter that saturates ~1 along organized branches.
+
 ## 1. Active Correctness & Code Defects
 
 **None.** The final item — `derive_a_cut`'s circular self-calibration — was closed in Round 5 by requiring an independent abiotic null (`null_source="abiotic"` default; `"run"` is flagged `circular: true`), and the dead spectral/survival helpers were either wired into `cmd_summarize` or removed (ledger items 45–46). All correctness defects are now in the closed ledger; their *scientific* consequence — invalidated historical results requiring rerun — is tracked in Section 4.
@@ -109,27 +119,11 @@ The following 53 items have been implemented and verified with tests
   ```
   This applies an arbitrary penalty of $+40$, making complex models mathematically incapable of winning on small sweeps regardless of fit quality.
 
-### 2.3 Degeneracy of `mass_raf` as an Order Parameter Along Organized Branches
-- **Location**: `src/chemtrans/observables/closure.py` & `AGENTS.md`
-- **Defect**: By definition, `mass_raf` measures the fraction of non-food monomer mass residing in species belonging to the maxRAF. Once a system ignites and self-maintains, virtually all synthesized polymers are produced by and participate in the RAF, causing `mass_raf` to saturate at $\approx 1.0$. As admitted in `NOTEBOOK.md`, `mass_raf` is completely insensitive to changes in total biomass, growth rate, or turnover along the organized branch. Total polymer mass `m_poly` is the de facto physical order parameter, but `AGENTS.md` and campaign configurations still treat `mass_raf` as primary.
-
-### 2.4 Model-Selection Discontinuities Propagated into $\lambda_c$ Without Model Averaging
-- **Location**: `src/chemtrans/analysis/cocriticality.py` (`estimate_lc_continuous`)
-- **Defect**: The critical point $\lambda_c$ is extracted from whichever model achieves the minimum AICc. On near-tied fits ($\Delta\text{AICc} < 2$), infinitesimal perturbations or sibling network variations cause the selected model to jump between `hinge`, `fold`, and `itrans`. Because these models define $\lambda_c$ differently (cusp vs jump vs inflection), $\lambda_c$ jumps discontinuously. This model-selection variance is unquantified and flows directly into paired difference tests.
-
-### 2.5 Krylov Large-Scale Solver Path Cannot Classify Dynamics
-- **Location**: `src/chemtrans/dynamics/ode.py` (`_krylov_equilibrium`)
-- **Defect**: For networks with $N > 3000$ species, `integrate_cstr` switches to trust-region Krylov equilibrium seeking (`_krylov_equilibrium`). This path seeks roots of the steady-state equation directly and generates no time trajectory. Consequently, oscillation and runaway detection are completely disabled, returning only `STATIONARY` or `UNRESOLVED`. For large polymer networks, `UNRESOLVED` conflates solver budget exhaustion, slow drift, and sustained limit cycles.
-
-### 2.6 `network_joint_bootstrap` Violates Anti-Pooling Doctrine
-- **Location**: `src/chemtrans/analysis/critical_points.py` (lines 186–191)
-- **Defect**: `network_joint_bootstrap` resamples network records with replacement, but then concatenates their $(\lambda, y)$ points into a single pooled scatter plot and fits one global curve. This violates the repository's foundational principle that heterogeneous networks with different intrinsic critical points must never be pooled into a single regression.
-
-### 2.7 Conceptual Inversion of Assembly Theory at Short String Lengths ($L \le 6$)
+### 2.3 Conceptual Inversion of Assembly Theory at Short String Lengths ($L \le 6$)
 - **Location**: `src/chemtrans/observables/assembly.py`
 - **Defect**: In `assembly.py`, `assembly_signature_absolute` defaults $a_{\text{cut}}$ to the pool maximum ($a_{\text{max}} = 5$ for $L=6$). For binary strings of length $L \le 6$, an assembly index of 5 requires **zero sub-block reuse**. Any autocatalytic replication or sequence-kin preference ($p_{\text{info}}$) inherently creates repeating motifs (e.g. `AA`, `ABAB`), which *depresses* the assembly index (`ABAB` $\to a=2$, while `ABBA` $\to a=3$). Consequently, the only sequences that achieve maximum assembly are the most disordered, non-autocatalytic strings. Expecting an autocatalytic network to produce high concentrations of maximum-assembly short strings is an unaddressed conceptual contradiction.
 
-### 2.8 Underpowered 2D Co-Criticality Evidence & Stale Summaries (RESIDUAL — code guards added, data unchanged)
+### 2.4 Underpowered 2D Co-Criticality Evidence & Stale Summaries (RESIDUAL — code guards added, data unchanged)
 - **Location**: `src/chemtrans/analysis/cocriticality.py` (`coincidence_2d`) & `data/validation/cocrit_2d*/`
 - **Status**: the *code* defects are remediated — `coincidence_report`/`coincidence_2d` now enforce a `min_pairs = 3` floor (ledger item 42) and `n_families_multilevel` guards against cross-level family pooling — so the *generated* failure mode is closed. What remains is the **data-level problem the guards merely expose**:
   1. **Verified on real data** (`data/validation/cocrit_2d_dk_n8_zoom-1e6ed5db10bf/summary.json`): the `O_assembly|O_hered` **"tracking"** verdict is built on exactly 3 paired diffs — `net5` at $\kappa = 100$ and $500$, plus a **different** family `net6` at $\kappa = 1500`. `O_maint|O_hered` "tracking" draws on `net5`/`net7`/`net1`/`net6` — at most 2 of the 8 seeds per level. Under the new `min_pairs` floor these cells now correctly report `insufficient_families` — but that means the campaign as designed cannot support its tracking claim without more seeds per secondary level.
@@ -146,18 +140,16 @@ The following 53 items have been implemented and verified with tests
    - Network replicates are typically $N = 3\text{--}8$.
    - Gillespie SSA replicates are $n = 3\text{--}8$ per condition.
    - At $n_{\text{pairs}} \le 2$ the `min_pairs` floor (ledger item 42) now vetoes a verdict, but campaigns producing exactly 3 pairs still yield an extremely weak equivalence claim — the floor prevents fabrication, not weakness.
-2. **Absence of Uncertainty Quantification**:
-   - No confidence intervals or bootstrap standard errors on fitted critical points ($\lambda_c$), dwell fractions, or extinction times.
-   - Competition win probabilities now carry Wilson 95% CIs (`p_a_wins_ci95_wilson`, ledger item 53) — the only binomial uncertainty reported anywhere.
-   - Scaling regressions (including the newly wired `extinction_scale_fit`, ledger item 46) report only $r^2$ over $n \ge 3$ points without parameter standard errors.
-3. **Uncorrected Multiple Testing**:
-   - The $15$-cell pairwise coincidence matrix across multiple parameter levels evaluates multiple hypotheses simultaneously without family-wise error rate or false discovery rate corrections. `coincidence_report` now annotates `n_pairwise_tests` and an explicit uncorrected-multiple-testing note (ledger item 53) — the multiplicity is visible but still uncontrolled.
-4. **Arbitrary Threshold Conditioning**:
-   - Scientific classifications depend on un-swept, hand-tuned parameters: `min_mass = 0.01`, `tol = 0.05`, `theta_organized = 0.1`, `mass_floor = 0.01`, `dwell = 10.0`, `t_max = 200.0`, plus the 75%-of-censor label-stability checkpoint and 80%-commitment boundary in competition labeling (ledger item 53). No sensitivity analyses exist to verify that conclusions are robust to threshold choices.
-5. **Observation Grid Artifacts**:
-   - Event detection, dwell, and first-passage times are evaluated on the discretization recording grid (`record_dt`), not exact continuous event times.
-6. **Stale Summaries and Historical Data Invalidation**:
-   - Because Rounds 1–5 corrected `run_id` hashing, catalyst length filtering, `phi_cat`, `derive_a_cut`, `O_select`, `cmd_summarize`, continuation hysteresis detection, the vector field itself, SSA hazard semantics, attractor clustering, competition labeling, and equivalence margins, **all committed data in `data/` and numbers quoted in `runs/NOTEBOOK.md` are invalidated**.
+2. **Partial Uncertainty Quantification**:
+   - Fitted critical points now carry an optional point-resample bootstrap CI (`lc_ci95`, `selection_freq`, ledger item 55) and Akaike-weighted model-average λc with spread — off by default, enabled via the `lc_boot` protocol key. **No protocol currently sets `lc_boot`.**
+   - Competition win probabilities carry Wilson 95% CIs (`p_a_wins_ci95_wilson`, ledger item 53).
+   - Still absent: CIs on dwell fractions and on the KM median/RMST (Greenwood SEs are computed by `kaplan_meier` but not surfaced into `summary["persistence"]`); scaling regressions (`extinction_scale_fit`) report only $r^2$ over $n \ge 3$ points without parameter standard errors.
+3. **Partially Corrected Multiple Testing**:
+   - Bootstrap-branch pairwise cells now carry TOST/separation p-values with Benjamini–Hochberg q-values across the matrix (ledger item 56). Exact-table cells (the common case at $n_{\text{pairs}} \le 12$) are deterministic classifications that remain unadjusted by construction — the correction exists only where a test exists.
+4. **Partially Instrumented Threshold Conditioning**:
+   - `task["sensitivity"]` now re-derives observables across `theta_organized`/`mass_floor` (stochastic, free per-event) and `tol`/`min_mass` (multistability, free reclustering) inside a single run (ledger item 59) — but no committed protocol uses it, and `dwell`, `t_max`, the 75% checkpoint, and the 80% commitment boundary remain un-swept.
+5. **Stale Summaries and Historical Data Invalidation**:
+   - Because Rounds 1–6 corrected `run_id` hashing, catalyst length filtering, `phi_cat`, `derive_a_cut`, `O_select`, `cmd_summarize`, continuation hysteresis detection, the vector field itself, SSA hazard semantics, attractor clustering, competition labeling, equivalence margins, critical-point estimation (model averaging + bootstrap CIs), pairwise-verdict multiplicity, Krylov-path stability certification, and event-time observables, **all committed data in `data/` and numbers quoted in `runs/NOTEBOOK.md` are invalidated**.
    - Resuming campaigns will re-execute all tasks under new run IDs.
    - Committed `summary.json` files on disk are out of sync with current schemas.
 
@@ -171,9 +163,9 @@ The following 53 items have been implemented and verified with tests
 | $p=2$ cooperative catalysis $\to$ compositional multistability | **Confirmed by construction** | Quadratic boost $\kappa x_C^2$ over shared fuel creates a winner-take-all architecture; amplitude bistability is now incorporated (§6.3). Stochastic analog is hazard-mode-dependent (ledger item 37). |
 | "Selection asymmetry survives equal-mass control" | **UNSUPPORTED / INVALIDATED** | Historical claim used buggy `eq_mass` units and survivor-only conditioning that masked 90%+ extinction as maximum selection; competition labels additionally suffered an A-favoring tie-break and mid-transit mislabeling (ledger items 43, 53). Win probabilities now carry Wilson CIs; remediations require full campaign re-execution. |
 | Ordered cascade ($D_{\text{maint}} > D_{\text{persist}} > D_{\text{hered}}$) | **Fragile** | Based on $N=3$ networks; changepoints are lower-bound counts; persist is a 3–8 rep mean at a single volume; sensitive to small sample noise. |
-| 2D "Tracking resolves at finer grid" | **UNDERDETERMINED / SEVERELY UNDERPOWERED** | In the stored `n8_zoom` summary the `O_assembly|O_hered` "tracking" verdict rests on **one family (net5) contributing diffs at 2 of 3 levels plus a different family (net6) at the third**; per-level verdicts are n_pairs=1–2 of the 8 seeds. Under the new `min_pairs` floor (ledger item 42) these now correctly report `insufficient_families`; the flattened 1D matrix is suppressed on 2D protocols (ledger item 44). Stored summaries must be regenerated (§2.8). |
+| 2D "Tracking resolves at finer grid" | **UNDERDETERMINED / SEVERELY UNDERPOWERED** | In the stored `n8_zoom` summary the `O_assembly|O_hered` "tracking" verdict rests on **one family (net5) contributing diffs at 2 of 3 levels plus a different family (net6) at the third**; per-level verdicts are n_pairs=1–2 of the 8 seeds. Under the new `min_pairs` floor (ledger item 42) these now correctly report `insufficient_families`; the flattened 1D matrix is suppressed on 2D protocols (ledger item 44). Stored summaries must be regenerated (§2.4). |
 | Exponential extinction scaling with volume $V$ | **UNSUPPORTED / CONVENTION-DEPENDENT** | Historical runs used `hazard_mode="participants"` — the falling-factorial zero at $n_c \le 1$ extinguishes cooperative catalysis at small $V$, manufacturing the apparent nucleation barrier (ledger item 37). Kaplan–Meier + `extinction_scale_fit` are now wired into summaries (ledger item 46), but the underlying data was generated under the old semantics — must be rerun under `"functional"` (and ideally both modes) before any interpretation. |
-| Assembly Theory null result | **Uncertified / Compromised** | $1/L$ copy number bug inflated $A_{\text{cut}}$ in original run; short string lengths conceptually invert assembly complexity vs motif reuse (§2.7); `derive_a_cut` self-calibration is now guarded by an independent abiotic null (ledger item 45) but no protocol exercised it — must rerun with `derive_cut` enabled. |
+| Assembly Theory null result | **Uncertified / Compromised** | $1/L$ copy number bug inflated $A_{\text{cut}}$ in original run; short string lengths conceptually invert assembly complexity vs motif reuse (§2.3); `derive_a_cut` self-calibration is now guarded by an independent abiotic null (ledger item 45) but no protocol exercised it — must rerun with `derive_cut` enabled. |
 | Hysteresis loops at $\varepsilon = 0$ | **Detection machinery now sound; unverified in data** | Reverse reseed operational (§6.10) and hysteresis now requires genuine branch-state divergence at common $\lambda$ (§6.13) — prior one-grid-step artifacts can no longer be reported. The net2 $\approx 0.6$ width in `docs/assembly_and_drivers_review.md` is likely spurious (it predates the guard); needs campaign re-execution. |
 | Co-criticality summaries selecting `sigmoid` | **Resolved in code; historical results invalidated** | Dilution sign negation (§6.14), unpooled per-family fitting (§6.2), and mirrored `*_rev` candidate models (ledger item 48) remove every structural advantage `sigmoid` held — all transition classes can now fit decreasing curves. Whether `sigmoid` still wins on regenerated data is an open empirical question; historical model-selection results remain invalid regardless. |
 
@@ -411,14 +403,13 @@ The following specifications cover newly identified high- and critical-priority 
 
 ## 7. Next Implementation Targets (Open High/Critical Issues, No Specs Yet)
 
-The previous targets — bound symmetry, interior IC coverage, dropout visibility, equivalence-margin bounding, `derive_a_cut` self-calibration, dead survival/spectral machinery, order-dependent clustering, extinct-state distance, competition transient truncation, and binomial CIs — are **implemented in Round 5** (ledger items 45–53). Remaining open targets, in rough priority order:
+The previous targets — pooled bootstrap, model-averaged λc, FDR correction, Krylov stability, event-time observables, threshold sensitivity machinery, and `m_poly` — are **implemented in Round 6** (ledger items 54–60). Remaining open targets, in rough priority order:
 
-1. **§2.1/§3.2 — survivorship bias + UQ on λc (HIGH, inference-design)**: near-critical dropouts are now *visible* (`coverage` reporting, ledger item 51) but still bias λc toward smooth models. Concretely: add bootstrap CIs on fitted critical points (resample certified points *and* re-draw dropout positions under a censoring model), and report λc as an interval, not a point, in `coincidence_report`.
-2. **§2.5 — Krylov-path dynamic classification (HIGH for large networks)**: `_krylov_equilibrium` certifies steady states without a trajectory, so `OSCILLATORY`/`RUNAWAY` are unreachable for $N > 3000$. Concretely: run a short post-equilibrium trajectory probe (or Jacobian-based Hopf screening on the certified root) before certifying `STATIONARY`.
-3. **§2.6 — pooled bootstrap (MEDIUM)**: `network_joint_bootstrap` concatenates heterogeneous networks into one regression. Concretely: resample families, fit λc *per family* within each resample, and report the dispersion of per-family λc's rather than a single pooled curve.
-4. **§2.3 — `mass_raf` saturation (MEDIUM, conceptual)**: the primary order parameter saturates at ≈1 along organized branches. Concretely: adopt `m_poly` (or a joint `mass_raf`/`m_poly` criterion) as primary in campaign configs and `AGENTS.md`, or document explicitly that `mass_raf` can only detect ignition, not branch growth.
-5. **§2.4 — model averaging for λc (MEDIUM)**: on ΔAICc < 2 ties, λc jumps between model definitions (cusp vs jump vs inflection). Concretely: emit an AICc-weighted model-average λc with its spread, or require a minimum AICc margin before any λc is reported.
-6. **§3.3 — multiple-testing control (MEDIUM)**: `n_pairwise_tests` is now reported but verdicts are still per-cell. Concretely: apply Benjamini–Hochberg across the pairwise matrix (or state explicitly that cells are exploratory).
-7. **§3.4 — threshold sensitivity sweeps (MEDIUM)**: `min_mass`, `tol`, `theta_organized`, `mass_floor`, `dwell`, the 75% checkpoint, and the 80% commitment boundary are un-swept. Concretely: add a sensitivity protocol that re-derives headline observables across ±1 order of magnitude in each threshold.
-8. **§2.8 — underpowered 2D campaigns (process, not code)**: `n8_zoom` supports at most 2 families per secondary level; `insufficient_families` is now the honest output. Concretely: re-run with ≥5 seeds per secondary level, or drop the 2D tracking claim.
-9. **Campaign regeneration (process, not code)**: every committed `data/` artifact predates the unclipped vector field, `hazard_mode`, `min_pairs`, `tol_pair` cap, competition relabeling, order-invariant clustering, interior ICs, independent-null `derive_a_cut`, and manifest-threshold recording — all results citing them must be rerun before the resolved code items translate into trustworthy numbers.
+1. **§2.1/§3.2 — survivorship bias + dropout-aware λc intervals (HIGH, inference-design)**: λc now carries optional bootstrap CIs (ledger item 55), but the *sampling mechanism* is still one-sided: near-critical nonconverged points are absent from the resampled point cloud, so the CI covers certified-point variance, not censoring bias. Concretely: resample dropout *positions* under an explicit censoring model (e.g. treat `UNRESOLVED` points as censored above the fitted curve) and propagate into the interval.
+2. **§2.5 — Krylov-path limit-cycle blindness (HIGH for large networks, residual)**: roots are now stability-certified, but a stable spiral embedded in a limit-cycle basin still certifies `STATIONARY`. Concretely: a short coarse trajectory probe (a few hundred implicit steps, or a Krylov-friendly Arnoldi check for complex-conjugate eigenpairs near the imaginary axis) before certification.
+3. **§3.2 — surface remaining UQ (MEDIUM)**: Greenwood SEs from `kaplan_meier` are computed but not emitted into `summary["persistence"]`; dwell fractions and `extinction_scale_fit` slopes have no intervals. Concretely: emit `se_greenwood` per KM point + a bootstrap or delta-method SE on the scale-fit slope.
+4. **§2.3 — Assembly conceptual inversion (MEDIUM, conceptual)**: at $L \le 6$ maximum assembly index requires zero motif reuse, which anticorrelates with autocatalysis — the "high-assembly life signature" is self-defeating on this chemistry's string lengths. Concretely: extend pools to $L \ge 10$ or reframe the observable as *relative* assembly enrichment vs the abiotic null (ledger item 45 supplies the reference).
+5. **§2.4 — underpowered 2D campaigns (process, not code)**: `n8_zoom` supports at most 2 families per secondary level; `insufficient_families` is now the honest output. Concretely: re-run with ≥5 seeds per secondary level, or drop the 2D tracking claim.
+6. **§3.4 — adopt sensitivity sweeps in protocols (process)**: `task["sensitivity"]` machinery exists (ledger item 59) but no committed protocol uses it; `dwell`, `t_max`, the 75% checkpoint, and the 80% commitment boundary are still uninstrumented. Concretely: add sensitivity blocks to flagship protocols and extend coverage to the remaining thresholds.
+7. **§3.2 — enable `lc_boot` in protocols (process)**: the λc bootstrap CI is off by default. Concretely: set `lc_boot` on the flagship protocols (cost is n_boot × n_families × n_observables refits at summarize time).
+8. **Campaign regeneration (process, not code)**: every committed `data/` artifact predates all six remediation rounds — all results citing them must be rerun before the resolved code items translate into trustworthy numbers.

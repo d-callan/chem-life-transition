@@ -128,10 +128,41 @@ def _clean_aicc(aicc: dict) -> dict:
 
 
 def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
-                           seed: int = 0) -> LcEstimate:
+                           seed: int = 0, n_boot: int = 0) -> LcEstimate:
     fit = fit_all_models(lam, y, seed=seed)
     sel, params = fit["selected"], fit["params"]
     detail = {"selected": sel, "aicc": _clean_aicc(fit["aicc"])}
+    # Akaike-weighted model average over lc-bearing models: when the
+    # winner's margin is thin (delta_aicc < 2) the point lc is a
+    # model-selection coin flip — the weighted estimate and its
+    # weighted spread make that variance explicit instead of hiding
+    # it inside a single model's breakpoint definition.
+    delta = {m: v for m, v in fit["delta_aicc"].items()
+             if np.isfinite(v)}
+    if delta:
+        w_raw = {m: np.exp(-0.5 * v) for m, v in delta.items()}
+        w_tot = sum(w_raw.values())
+        weights = {m: v / w_tot for m, v in w_raw.items()}
+        detail["akaike_weights"] = {m: float(v)
+                                    for m, v in weights.items()}
+        detail["winner_weight"] = float(weights.get(sel, 0.0))
+        deltas_sorted = sorted(v for m, v in delta.items() if v > 0)
+        detail["runner_up_delta_aicc"] = (
+            float(deltas_sorted[0]) if deltas_sorted else None)
+        lcs = []
+        for m, fm in fit["_fits"].items():
+            key = _LC_MAP.get(m)
+            if key and np.isfinite(fm.aicc) and np.isfinite(
+                    fm.params.get(key[0], np.nan)):
+                lcs.append((weights.get(m, 0.0),
+                            float(fm.params[key[0]])))
+        if lcs:
+            wsum = sum(w for w, _ in lcs)
+            if wsum > 0:
+                mean = sum(w * v for w, v in lcs) / wsum
+                var = sum(w * (v - mean) ** 2 for w, v in lcs) / wsum
+                detail["lc_aicc_avg"] = float(mean)
+                detail["lc_model_spread"] = float(np.sqrt(var))
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
         if sel in ("fold", "fold_rev"):
@@ -154,9 +185,56 @@ def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
         # below/above the sweep, which is not a measurement
         if lc < lam.min() or lc > lam.max():
             detail["extrapolated"] = True
+        if n_boot > 0:
+            detail.update(
+                _lc_bootstrap(lam, y, n_boot=n_boot, seed=seed))
         return LcEstimate(lc, cls, detail)
+    detail_boot = detail
+    if n_boot > 0:
+        detail_boot = dict(detail)
+        detail_boot.update(_lc_bootstrap(lam, y, n_boot=n_boot,
+                                         seed=seed))
     return LcEstimate(None, "none" if sel == "null" else "crossover",
-                      detail)
+                      detail_boot)
+
+
+def _lc_bootstrap(lam: np.ndarray, y: np.ndarray, n_boot: int,
+                  seed: int) -> dict:
+    """Point-resample bootstrap of the fitted critical point.
+
+    Resamples (lam, y) pairs with replacement and refits the full
+    candidate set — the resulting distribution mixes point-resample
+    variance AND model-selection variance (the selected model can
+    change across resamples), which is exactly the uncertainty a
+    single-model lc conceals. `n_finite` reports resamples whose
+    winner carried an lc — a small fraction means the "critical
+    point" is itself unstable across resamples.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(lam)
+    lcs, sels = [], []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        f = fit_all_models(lam[idx], y[idx],
+                           seed=int(rng.integers(2**31)))
+        sels.append(f["selected"])
+        key = _LC_MAP.get(f["selected"])
+        if key and np.isfinite(f["params"].get(key[0], np.nan)):
+            lcs.append(float(f["params"][key[0]]))
+    labels, counts = np.unique(sels, return_counts=True)
+    out = {"lc_boot_n": n_boot,
+           "lc_boot_n_finite": len(lcs),
+           "selection_freq": {m: int(c)
+                              for m, c in zip(labels, counts)}}
+    if len(lcs) >= 10:
+        out["lc_ci95"] = [float(v)
+                          for v in np.quantile(lcs, [0.025, 0.975])]
+        out["lc_boot_median"] = float(np.median(lcs))
+    else:
+        out["lc_ci95"] = None
+        out["lc_boot_median"] = (float(np.median(lcs))
+                                 if lcs else None)
+    return out
 
 
 def estimate_lc_discrete(by_net_series: dict, active_pred,
@@ -228,7 +306,8 @@ def _lc_discrete_family(lam: np.ndarray, y: np.ndarray) -> LcEstimate:
 
 
 def lc_by_family(by_net: dict[str, list[dict]], obs: str,
-                 seed: int = 0) -> dict[str, LcEstimate]:
+                 seed: int = 0, lc_boot: int = 0
+                 ) -> dict[str, LcEstimate]:
     """{family: LcEstimate} — a fit per family, never pooled."""
     if obs in CONDITIONAL:
         return {}
@@ -238,7 +317,8 @@ def lc_by_family(by_net: dict[str, list[dict]], obs: str,
         if obs in DISCRETE:
             out[fam] = _lc_discrete_family(lam, y)
         else:
-            out[fam] = estimate_lc_continuous(lam, y, seed=seed)
+            out[fam] = estimate_lc_continuous(lam, y, seed=seed,
+                                              n_boot=lc_boot)
     return out
 
 
@@ -277,7 +357,8 @@ def coincidence_report(by_net: dict[str, list[dict]],
                        tol_pair: float | None = None,
                        tol_frac: float = 0.10,
                        exact_table_max: int = 12,
-                       min_pairs: int = 3) -> dict:
+                       min_pairs: int = 3,
+                       lc_boot: int = 0) -> dict:
     """Pairwise coincidence matrix from PER-FAMILY paired λc diffs.
 
     tol_pair: equivalence margin in λ units. None -> 2x median grid
@@ -311,7 +392,8 @@ def coincidence_report(by_net: dict[str, list[dict]],
                                           grid_res or 0.0)))
     tol_frac_of_domain = (tol_pair / domain) if domain else None
 
-    per_fam = {o: lc_by_family(by_net, o, seed) for o in observables}
+    per_fam = {o: lc_by_family(by_net, o, seed, lc_boot=lc_boot)
+               for o in observables}
     point_ests = {o: _lc_for_obs(by_net, o, seed) for o in observables}
 
     # survivorship-bias visibility: count how many records per family
@@ -400,12 +482,41 @@ def coincidence_report(by_net: dict[str, list[dict]],
                     verdict = "separated"
                 else:
                     verdict = "inconclusive"
+                # bootstrap p-values for multiple-testing correction:
+                # TOST equivalence p = max tail beyond ±tol; two-sided
+                # separation p = 2 * min tail across 0
+                p_tost = float(max(
+                    np.mean(boot <= -tol_pair),
+                    np.mean(boot >= tol_pair)))
+                p_sep = float(min(1.0, 2.0 * min(
+                    np.mean(boot <= 0.0), np.mean(boot >= 0.0))))
                 entry.update({"verdict": verdict,
                               "mean_diff": float(d.mean()),
                               "ci90": [float(lo90), float(hi90)],
                               "ci95": [float(lo95), float(hi95)],
+                              "p_tost": p_tost, "p_separation": p_sep,
                               "estimator": "paired_bootstrap"})
             matrix[f"{oj}|{ok}"] = entry
+    # Benjamini–Hochberg across the cells that carry bootstrap
+    # p-values. Exact-table cells (n <= exact_table_max) are
+    # deterministic classifications, not hypothesis tests — they are
+    # annotated rather than adjusted.
+    for p_key, q_key in (("p_tost", "q_tost"),
+                         ("p_separation", "q_separation")):
+        tested = sorted(
+            ((e[p_key], k) for k, e in matrix.items()
+             if p_key in e and np.isfinite(e[p_key])),
+            key=lambda t: t[0])
+        m = len(tested)
+        if m:
+            # enforce monotonicity: q_(i) = min over j>=i of p_(j)*m/j
+            adj = [min(1.0, p * m / rank)
+                   for rank, (p, _) in enumerate(tested, start=1)]
+            for i in range(m - 2, -1, -1):
+                adj[i] = min(adj[i], adj[i + 1])
+            for (p, k), q in zip(tested, adj):
+                matrix[k][q_key] = float(q)
+    n_tested = sum(1 for e in matrix.values() if "p_tost" in e)
     return {
         "family_estimates": {
             o: {f: {"lc": e.lc, "class": e.transition_class,
@@ -419,8 +530,13 @@ def coincidence_report(by_net: dict[str, list[dict]],
             for o, e in point_ests.items()},
         "pairwise": matrix,
         "n_pairwise_tests": len(matrix),
-        "multiple_testing": ("uncorrected — per-cell verdicts; no "
-                             "FWER/FDR control applied"),
+        "n_bootstrap_tested": n_tested,
+        "multiple_testing": (
+            "Benjamini-Hochberg FDR applied across the "
+            f"{n_tested} bootstrap-tested cells (q_tost / "
+            "q_separation); exact-table cells are deterministic "
+            "classifications, not hypothesis tests, and are not "
+            "adjusted"),
         "coverage": coverage,
         "n_families": n, "n_boot": n_boot, "min_pairs": min_pairs,
         "tol_pair": tol_pair, "grid_resolution": grid_res,
@@ -436,7 +552,8 @@ def coincidence_2d(records: list[dict], secondary_param: str,
                    observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
                    n_boot: int = 400, seed: int = 0,
                    min_pairs: int = 3,
-                   tol_frac: float = 0.10) -> dict:
+                   tol_frac: float = 0.10,
+                   lc_boot: int = 0) -> dict:
     """Perturbational co-criticality over a SECOND swept axis.
 
     The decisive gated-collinearity test: partition the records by the
@@ -477,7 +594,7 @@ def coincidence_2d(records: list[dict], secondary_param: str,
         per_level[k] = coincidence_report(
             group_by_network(levels[k]), observables,
             n_boot=n_boot, seed=seed, min_pairs=min_pairs,
-            tol_frac=tol_frac)
+            tol_frac=tol_frac, lc_boot=lc_boot)
 
     # union of pair keys across levels
     pairs = sorted({p for rep in per_level.values()

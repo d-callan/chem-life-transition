@@ -33,9 +33,13 @@ exact falling-factorial SSA.
 4. **Structured statuses.** Dynamics return STATIONARY / OSCILLATORY /
    RUNAWAY / UNRESOLVED; only certified equilibria carry `x_eq`.
    Never use `max(x,0)` inside the vector field to hide negativity.
-5. **mass_raf is the primary order parameter** (monomer mass in maxRAF
-   species / non-food mass). `phi_*` are diagnostics with explicit
-   denominators.
+5. **mass_raf is the ignition order parameter; m_poly is the branch
+   order parameter.** `mass_raf` (monomer mass in maxRAF species /
+   non-food mass) saturates at ~1 once a system self-maintains — it
+   detects ignition but cannot discriminate along organized branches.
+   Use `order_parameter: "m_poly"` (nonfood monomer-mass
+   concentration, emitted per equilibrium record) for branch-growth
+   questions. `phi_*` are diagnostics with explicit denominators.
 6. **Strict JSON run records**: no NaN/Infinity — use null + reason.
    run_id/net_hash are content-derived; campaigns resume by skipping
    existing ids and refuse protocol-hash mismatches.

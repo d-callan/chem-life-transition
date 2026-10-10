@@ -364,7 +364,10 @@ def measure_run(task: dict) -> dict:
                                    n_ic=n_ic, min_mass=min_mass,
                                    t_max=float(mspec.get(
                                        "t_max", reactor.get(
-                                           "t_max", 200.0))))
+                                           "t_max", 200.0))),
+                                   sensitivity=(task.get(
+                                       "sensitivity") or {}).get(
+                                           "multistability"))
         _add_per_attractor_obs(net, ms, task)
         rec["multistability"] = ms
     else:
@@ -386,7 +389,9 @@ def measure_run(task: dict) -> dict:
                 net, dilution, eps, seed_key,
                 n_ic=int(cspec.get("n_ic", 16)),
                 min_mass=float(cspec.get("min_mass", 0.01)),
-                t_max=float(cspec.get("t_max", 200.0)))
+                t_max=float(cspec.get("t_max", 200.0)),
+                sensitivity=(task.get("sensitivity") or {}).get(
+                    "multistability"))
             _add_per_attractor_obs(net, ms_block, task)
             rec["multistability"] = ms_block
         rec["competition"] = _competition_block(
@@ -417,34 +422,84 @@ def measure_run(task: dict) -> dict:
         if n0 is not None:
             n_seed_dropped = int(np.sum(
                 (np.asarray(x0_det) > 0) & (n0 == 0)))
+
+        # Event-time observables: an observer per (theta, mass_floor)
+        # cell delta-tracks core/nf mass O(1) per event and integrates
+        # organized dwell on the true event-time step function —
+        # replacing record_dt-grid quantization of entry/extinction
+        # times and dwell (former §3.5 grid artifact).
+        core_mask = np.zeros(net.n_species, bool)
+        for i in closure.raf_species(net):
+            core_mask[i] = True
+        procs_obs = gillespie.build_processes(
+            net, dilution, eps, hazard_mode=hazard_mode)
+        d_core = np.array([sum(comp_mass[i] * dc for i, dc in p.delta
+                               if core_mask[i]) for p in procs_obs])
+        d_nf = np.array([sum(comp_mass[i] * dc for i, dc in p.delta
+                             if nonfood[i]) for p in procs_obs])
+
+        # sensitivity sweep cells share the same simulated events —
+        # extra observers cost O(1) per event each, no extra runs
+        sens = task.get("sensitivity") or {}
+        s_stoch = sens.get("stochastic") or {}
+        th_grid = sorted({theta, *[float(v) for v in
+                                   s_stoch.get("theta_organized", [])]})
+        fl_grid = sorted({mass_floor, *[float(v) for v in
+                                        s_stoch.get("mass_floor", [])]})
+        cells = [(th, fl) for th in th_grid for fl in fl_grid]
+        cell_results: dict[str, list] = {}
+
+        def _observer(theta_v, floor_v):
+            st = {"core": 0.0, "nf": 0.0, "org": False, "t_prev": 0.0,
+                  "t_first": None, "t_ext": None, "t_abs": None,
+                  "dwell": 0.0, "n_tog": 0}
+
+            def obs(t, n, kind, idx):
+                if idx < 0:  # init callback at t=0
+                    st["core"] = float(
+                        n[core_mask] @ comp_mass[core_mask]) / volume
+                    st["nf"] = float(
+                        n[nonfood] @ comp_mass[nonfood]) / volume
+                    st["org"] = (st["nf"] >= floor_v and
+                                 st["core"] / st["nf"] > theta_v
+                                 if st["nf"] > 0 else False)
+                    st["t_prev"] = t
+                    return
+                st["dwell"] += float(st["org"]) * (t - st["t_prev"])
+                st["t_prev"] = t
+                st["core"] += d_core[idx] / volume
+                st["nf"] += d_nf[idx] / volume
+                nf0 = st["nf"]
+                org_now = (nf0 >= floor_v and
+                           st["core"] / nf0 > theta_v)
+                if org_now != st["org"]:
+                    st["n_tog"] += 1
+                    if org_now and st["t_first"] is None:
+                        st["t_first"] = t
+                st["org"] = org_now
+                if st["t_first"] is not None:
+                    if st["t_abs"] is None and nf0 <= 0.0:
+                        st["t_abs"] = t
+                    if st["t_ext"] is None and nf0 < floor_v:
+                        st["t_ext"] = t
+            return st, obs
+
         for r_i in range(replicates):
             seed = derive_seed(f"{seed_key}|ssa|{r_i}")
+            cell_states = [_observer(th, fl) for th, fl in cells]
             res = gillespie.simulate(
                 net, t_max=t_max, dilution=dilution, volume=volume,
                 eps=eps, seed=seed, n0=n0,
                 max_events=int(stoch.get("max_events", 2_000_000)),
                 record_dt=float(stoch.get("record_dt", t_max / 1000)),
-                hazard_mode=hazard_mode)
+                hazard_mode=hazard_mode,
+                observers=tuple(obs for _, obs in cell_states))
             o = mass_raf_series(net, res.n, volume)
-            nf = res.n[:, nonfood].sum(axis=1)
-            # absolute nonfood monomer-mass concentration
-            nf_mass = res.n[:, nonfood] @ comp_mass[nonfood] / volume
-            # organized = high RAF fraction AND above absolute mass floor
-            organized = (o > theta) & (nf_mass >= mass_floor)
-            # censor at censor_time: padded records must not count
-            mask = res.t <= res.censor_time + 1e-12
-            idx_org = np.nonzero(organized & mask)[0]
-            # quasi-extinction: first dip below the absolute mass floor
-            # after first organization (meaningful at eps>=0; the strict
-            # absorbing hit nf==0 is only possible at eps=0). Both are
-            # masked to post-organization — an absorbing hit at t=0 on a
-            # food-only start is vacuous, not an extinction.
-            if len(idx_org):
-                post = mask & (np.arange(len(nf_mass)) >= idx_org[0])
-                idx_abs = np.nonzero(post & (nf == 0))[0]
-                idx_ext = np.nonzero(post & (nf_mass < mass_floor))[0]
-            else:
-                idx_abs = idx_ext = np.array([], dtype=int)
+            st0 = cell_states[cells.index((theta, mass_floor))][0]
+            # close the dwell integral at the true censor horizon —
+            # truncated runs are not credited for the unobserved tail
+            dwell_evt = st0["dwell"] + float(st0["org"]) * max(
+                0.0, res.censor_time - st0["t_prev"])
             reps.append({
                 "seed": seed,
                 "completed": res.completed,
@@ -453,21 +508,28 @@ def measure_run(task: dict) -> dict:
                 "events": res.events,
                 "O_final": float(o[-1]),
                 "O_max": float(o.max()),
-                "t_first_organized": (float(res.t[idx_org[0]])
-                                      if len(idx_org) else None),
-                "t_extinction": (float(res.t[idx_ext[0]])
-                                 if len(idx_ext) else None),
-                "t_absorbing": (float(res.t[idx_abs[0]])
-                                if len(idx_abs) else None),
-                # dwell as a fraction of the intended horizon t_max:
-                # a run truncated while organized at t < t_max is NOT
-                # 100% dwell — the unobserved remainder is not credited
+                # event-time resolution: the actual crossing event,
+                # not the next grid record
+                "t_first_organized": st0["t_first"],
+                "t_extinction": st0["t_ext"],
+                "t_absorbing": st0["t_abs"],
+                # dwell integrated on the event-time step function
                 "dwell_organized": min(1.0, float(
-                    organized[mask].sum()
-                    * res.diagnostics["record_dt"]
-                    / max(t_max, 1e-12))),
+                    dwell_evt / max(t_max, 1e-12))),
                 "dwell_untruncated": bool(not res.truncated),
+                "n_organized_toggles": st0["n_tog"],
             })
+            # off-primary sensitivity cells: keep the same summaries
+            for (th, fl), (stc, _) in zip(cells, cell_states):
+                if (th, fl) == (theta, mass_floor):
+                    continue
+                dwell_c = stc["dwell"] + float(stc["org"]) * max(
+                    0.0, res.censor_time - stc["t_prev"])
+                cell_results.setdefault(f"{th:g}|{fl:g}", []).append({
+                    "t_first_organized": stc["t_first"],
+                    "t_extinction": stc["t_ext"],
+                    "dwell_organized": min(1.0, float(
+                        dwell_c / max(t_max, 1e-12)))})
         rec["stochastic"] = {
             "volume": volume, "replicates": reps,
             "n_replicates": len(reps),
@@ -476,7 +538,16 @@ def measure_run(task: dict) -> dict:
             "hazard_mode": hazard_mode,
             "n_seed_dropped": n_seed_dropped,
             "init_policy": init_policy,
+            "time_resolution": ("event — crossings recorded at SSA "
+                                "event times, not record_dt grid"),
         }
+        if cell_results:
+            rec.setdefault("sensitivity", {})["stochastic"] = {
+                "theta_organized": th_grid,
+                "mass_floor": fl_grid,
+                "cells": {k: {"replicates": v}
+                          for k, v in cell_results.items()},
+                "primary": f"{theta:g}|{mass_floor:g}"}
     else:
         rec["stochastic"] = None
 
@@ -719,7 +790,8 @@ def _ic_bank(net: ReactionNetwork, seed_key: str, n_ic: int,
 def _multistability_block(net: ReactionNetwork, dilution: float,
                           eps: float, seed_key: str, *,
                           n_ic: int, min_mass: float,
-                          t_max: float) -> dict:
+                          t_max: float,
+                          sensitivity: dict | None = None) -> dict:
     """Certified multi-IC scan -> attractor clustering + member x_eqs.
 
     Returns the clustering plus a representative certified equilibrium
@@ -755,6 +827,26 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
     cl_total = heredity.cluster_attractors(net, stable_eqs, tol=0.05,
                                            min_mass=min_mass,
                                            mass_ratio_tol=1.5)
+    # threshold sensitivity: recluster the SAME certified equilibria
+    # across the (tol, min_mass) grid — attractor counts that flip
+    # under plausible threshold shifts are reported, not hidden
+    sens_out = None
+    if sensitivity:
+        tol_grid = sorted({0.05, *[float(v) for v in
+                                   sensitivity.get("tol", [])]})
+        mm_grid = sorted({min_mass, *[float(v) for v in
+                                      sensitivity.get("min_mass", [])]})
+        sens_out = {
+            "tol": tol_grid, "min_mass": mm_grid,
+            "primary": f"0.05|{min_mass:g}",
+            "cells": {
+                f"{tv:g}|{mv:g}": {
+                    "n_attractors": heredity.cluster_attractors(
+                        net, stable_eqs, tol=tv,
+                        min_mass=mv)["n_attractors"]}
+                for tv in tol_grid for mv in mm_grid
+                if not (tv == 0.05 and mv == min_mass)},
+        }
     # representative member x_eq per organized cluster
     centers_x = {}
     for c in range(cl["n_attractors"]):
@@ -781,6 +873,7 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
             str(c): net.species[int(np.argmax(
                 heredity.attractor_signature(net, x)))]
             for c, x in centers_x.items()},
+        **({"sensitivity": sens_out} if sens_out else {}),
     }
 
 
