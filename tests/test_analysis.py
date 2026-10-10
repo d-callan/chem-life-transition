@@ -32,7 +32,7 @@ def test_fold_selected_on_jump_data():
     rng = np.random.default_rng(2)
     lam = np.linspace(0, 1, 40)
     y = np.where(lam < 0.55, 0.02,
-                 0.7 + 0.4 * np.sqrt(lam - 0.55))
+                 0.7 + 0.4 * np.sqrt(np.maximum(lam - 0.55, 0.0)))
     y += 0.002 * rng.standard_normal(40)
     res = fit_all_models(lam, y, seed=0)
     assert res["selected"] == "fold"

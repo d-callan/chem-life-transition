@@ -30,9 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import numpy as np
 
-from chemtrans.measure import measure_run, derive_seed
+from chemtrans.measure import derive_seed, measure_run
 from chemtrans.provenance import (
-    code_version, environment, sha256_json, strict_jsonable,
+    code_version,
+    environment,
+    sha256_json,
+    strict_jsonable,
 )
 
 
@@ -133,33 +136,46 @@ def cmd_validate(args):
     protocol = load_protocol(Path(args.protocol))
     report = {"protocol": protocol["name"], "checks": []}
     tasks = expand_tasks(protocol)
+    # dedupe on the RESOLVED generator spec, not seed_key: a
+    # generator-param sweep (generator.delta_mu, generator.p_cat, ...)
+    # produces different networks under one seed_key, and every one of
+    # them needs conservation + thermodynamic validation
     nets = {}
     for e in tasks:
         sk = e["seed_key"]
-        if sk in nets:
-            continue
         from chemtrans.measure import build_network
         gen = dict(e["task"]["generator"])
         gen.setdefault("seed", derive_seed(sk + "|gen"))
+        gkey = sha256_json(gen)
+        if gkey in nets:
+            continue
         net, _ = build_network(gen)
-        nets[sk] = net
+        nets[gkey] = (sk, net, gen)
     ok = True
-    for sk, net in nets.items():
-        check = {"seed_key": sk, "net_hash": net.hash}
+    for gkey, (sk, net, gen) in nets.items():
+        check = {"seed_key": sk, "net_hash": net.hash,
+                 "generator": {k: v for k, v in gen.items()
+                               if k != "seed"}}
         try:
             db = net.check_detailed_balance()
             check["thermo_consistent"] = db["ok"]
             if not db["ok"]:
                 ok = False
                 check["bad_channels"] = [
-                    r for r in db["channels"] if r["rel_err"] > 1e-6]
+                    r for r in db["channels"]
+                    if r.get("rel_err", 0.0) > 1e-6
+                    or (r.get("error") == "irreversible_channel"
+                        and not r.get("declared_driven"))]
         except ValueError:
             check["thermo_consistent"] = None  # no g: not checkable
         if net.comp is not None:
             lc = net.check_letter_conservation()
             check["letter_conservation"] = lc["ok"]
-            check["max_letter_drift"] = float(
-                np.abs(net.comp @ net.stoichiometry()).max())
+            # sparse-safe: (S.T @ comp.T).T avoids a dense@sparse product
+            S = net.stoichiometry()
+            res = (np.asarray(S.T @ net.comp.T).T
+                   if net.use_sparse else net.comp @ S)
+            check["max_letter_drift"] = float(np.abs(res).max())
             if not lc["ok"]:
                 ok = False
         report["checks"].append(check)
@@ -229,10 +245,12 @@ def _preview_id(task_entry: dict) -> str:
     gen = dict(task_entry["task"]["generator"])
     gen.setdefault("seed", derive_seed(task_entry["seed_key"] + "|gen"))
     net, _ = build_network(gen)
-    params = {"gen": gen, "reactor": task_entry["task"].get("reactor", {}),
-              "eps": task_entry["task"].get("eps", net.eps),
-              "stochastic": task_entry["task"].get("stochastic")}
-    return run_id(net.hash, params, task_entry["seed_key"])
+    # must hash the same task identity as measure_run: every
+    # analysis-affecting key, not just gen/reactor/eps/stochastic
+    task_identity = {k: v for k, v in task_entry["task"].items()
+                     if k not in ("seed_key", "name")}
+    task_identity["generator"] = gen
+    return run_id(net.hash, task_identity, task_entry["seed_key"])
 
 
 def _append(shard: Path, rec: dict):
@@ -314,24 +332,69 @@ def cmd_summarize(args):
         "points": {str(k): v for k, v in sorted(pts.items())},
     }
 
-    # transition-shape model comparison when we have a usable curve
+    # transition-shape model comparison: fit per (network family,
+    # secondary level) — pooling staggered onsets across networks or
+    # drive levels fabricates a smooth sigmoid out of sharp transitions
     if control:
-        lams, ys = [], []
-        for lam, rows in pts.items():
-            vals = [p["y"] for p in rows if p["y"] is not None]
-            if vals:
-                lams.append(lam)
-                ys.append(float(np.mean(vals)))
-        if len(lams) >= 4:
-            from chemtrans.analysis.critical_points import (
-                fit_all_models)
-            fit = fit_all_models(np.array(lams), np.array(ys))
-            summary["transition_fit"] = {
-                k: v for k, v in fit.items() if k != "_fits"}
-        else:
-            summary["transition_fit"] = {
-                "status": "insufficient_points",
-                "n_lambda": len(lams)}
+        from chemtrans.analysis.critical_points import fit_all_models
+        sec_ax = manifest["protocol"].get("secondary_axis")
+        sec_param = (sec_ax if isinstance(sec_ax, str)
+                     else (sec_ax or {}).get("param"))
+        groups: dict = {}
+        for r in records:
+            lam_v = r.get("sweep", {}).get(control)
+            y_v = extract_y(r)
+            if lam_v is None or y_v is None:
+                continue
+            fam = f"{r.get('seed_key')}|{r['net_hash']}"
+            sec = (float(r["sweep"][sec_param])
+                   if sec_param and sec_param in r.get("sweep", {})
+                   else None)
+            groups.setdefault((fam, sec), {}).setdefault(
+                float(lam_v), []).append(float(y_v))
+        fits_by_group = {}
+        for (fam, sec), lam_map in sorted(groups.items()):
+            gname = fam if sec is None else f"{fam}|{sec_param}={sec}"
+            xs = sorted(lam_map)
+            ys_mean = [float(np.mean(lam_map[g])) for g in xs]
+            if len(xs) < 4:
+                fits_by_group[gname] = {
+                    "status": "insufficient_points",
+                    "n_lambda": len(xs)}
+                continue
+            # fit in CONTROL units: the control axis may negate the
+            # raw sweep (e.g. dilution washes out polymer, so order
+            # grows with -dilution). Onset models (hinge/fold/itrans)
+            # are parameterized positive-on; fitting raw decreasing
+            # data hands a spurious win to the direction-agnostic
+            # sigmoid.
+            fit = fit_all_models(sign * np.array(xs), np.array(ys_mean))
+            tfit = {k: v for k, v in fit.items() if k != "_fits"}
+            params = dict(tfit.get("params") or {})
+            for key in ("lc", "lf"):
+                if key in params:
+                    params[key + "_raw"] = sign * params[key]
+            tfit["params"] = params
+            tfit["control_sign"] = sign
+            # failed fits carry aicc=inf -> not strict-JSON; null them
+            for kk in ("aicc", "rss"):
+                if isinstance(tfit.get(kk), dict):
+                    tfit[kk] = {m: (float(v) if np.isfinite(v) else None)
+                                for m, v in tfit[kk].items()}
+            fits_by_group[gname] = tfit
+        sel_counts: dict = {}
+        for g in fits_by_group.values():
+            sel = g.get("selected")
+            if sel:
+                sel_counts[sel] = sel_counts.get(sel, 0) + 1
+        summary["transition_fit"] = {
+            "mode": "per_family_per_secondary",
+            "grouping": ("seed_key|net_hash"
+                         + (f" x {sec_param}" if sec_param else "")),
+            "consensus_model": (max(sel_counts, key=sel_counts.get)
+                                if sel_counts else None),
+            "selection_counts": sel_counts,
+            "fits": fits_by_group}
 
     # co-criticality summary: per-observable λc + pairwise matrix
     if manifest["protocol"].get("summarize_mode") == "cocriticality":
@@ -370,12 +433,13 @@ def cmd_zoom(args):
     """Scout->Zoom: read a campaign summary, bracket the detected
     critical region, and emit a refined-grid protocol.
 
-    Uses the per-family λc estimates in summary['cocriticality']
-    (all observables pooled): the zoom range is
-    [min(lc) - pad, max(lc) + pad] in CONTROL units, then mapped back
-    to raw sweep units via the control-axis direction. Per-family
-    heterogeneity widens the window rather than picking one family's
-    transition — correct for a paired re-measurement.
+    Uses per-family λc estimates in summary['cocriticality'] for ONE
+    target observable (--observable; default: the protocol's declared
+    order parameter / primary observable). Pooling λc's across
+    observables takes the union envelope of unrelated changepoints,
+    which widens the window across the whole original domain instead
+    of zooming on a single transition. Per-family heterogeneity still
+    widens the window — correct for a paired re-measurement.
     """
     mdir = Path(args.manifest).parent
     manifest = json.loads(Path(args.manifest).read_text())
@@ -387,7 +451,30 @@ def cmd_zoom(args):
 
     fam_ests = (summary.get("cocriticality") or {}).get(
         "family_estimates") or {}
-    lcs = [e["lc"] for obs in fam_ests.values()
+    # map record-path order parameters to the life-vector observable
+    # that brackets the same transition
+    op_map = {"equilibrium.m_poly": "O_maint", "mass_raf": "O_maint",
+              "equilibrium.assembly_signature.mass_signature":
+              "O_assembly",
+              "equilibrium.assembly_signature.mass_signature_abs":
+              "O_assembly"}
+    target_obs = (args.observable
+                  or proto.get("primary_observable")
+                  or op_map.get(proto.get("order_parameter")))
+    if target_obs and target_obs.upper() == "ALL":
+        target_obs = None
+    if target_obs:
+        src = {target_obs: fam_ests[target_obs]} \
+            if target_obs in fam_ests else {}
+        if not src:
+            raise SystemExit(
+                f"zoom: observable '{target_obs}' has no family λc "
+                f"estimates (available: {sorted(fam_ests)})")
+    else:
+        # no declared primary observable — fall back to the envelope
+        # of ALL observables, flagged as such in the output metadata
+        src = fam_ests
+    lcs = [e["lc"] for obs in src.values()
            for e in obs.values()
            if e.get("lc") is not None and not e.get("extrapolated")]
     if not lcs:
@@ -418,11 +505,13 @@ def cmd_zoom(args):
             s["values"] = [float(v) for v in raw]
     newp["zoom_of"] = {"campaign": str(mdir),
                        "lam_window": [float(lo), float(hi)],
+                       "observable": target_obs or "ALL_POOLED",
                        "lc_inputs": [float(v) for v in sorted(lcs)]}
     out = Path(args.out or f"{proto['name']}_zoom.json")
     out.write_text(json.dumps(newp, indent=2, sort_keys=True))
     print(json.dumps({"protocol": str(out),
                       "control": param,
+                      "observable": target_obs or "ALL_POOLED",
                       "lam_window": [float(lo), float(hi)],
                       "n_lc_inputs": len(lcs),
                       "values": [float(v) for v in raw]}, indent=2))
@@ -449,6 +538,12 @@ def main():
     p.add_argument("--manifest", required=True)
     p.add_argument("--n-points", type=int, default=9)
     p.add_argument("--pad", type=float, default=0.25)
+    p.add_argument("--observable",
+                   help="life-vector observable whose family λc's "
+                        "bracket the zoom window (default: the "
+                        "protocol's order_parameter / "
+                        "primary_observable; 'ALL' pools every "
+                        "observable — the old envelope behavior)")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_zoom)
     args = ap.parse_args()

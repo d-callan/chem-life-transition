@@ -16,15 +16,19 @@ from ..networks.core import ReactionNetwork
 
 def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
                   eps: float | None = None,
-                  k_sparse: int = 6) -> np.ndarray:
+                  k_sparse: int = 6) -> tuple[np.ndarray, bool]:
     """Eigenvalues of the CSTR Jacobian at x, sorted by real part desc.
 
     Sparse networks: only the `k_sparse` rightmost eigenvalues via
     scipy.sparse.linalg.eigs (which='LR'). Certification only needs
     the leading real part; the returned array is shorter than
-    n_species in that mode. If ARPACK fails to converge we report
-    what it found — the caller treats the certification as
-    'unresolved' rather than inventing a sign."""
+    n_species in that mode.
+
+    Returns (eigenvalues, fully_converged). ``fully_converged`` is
+    False when ARPACK fails to converge all k modes — the returned
+    subset may be missing the leading unstable eigenvalue, so a
+    truncated spectrum must never be used to certify stability.
+    """
     J = net.jacobian(np.maximum(np.asarray(x, float), 0.0), dilution, eps)
     if net.use_sparse:
         import scipy.sparse.linalg as spla
@@ -37,16 +41,25 @@ def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
         except spla.ArpackNoConvergence as e:
             w = e.eigenvalues_converged
             if w is None or len(w) == 0:
-                return np.array([np.nan + 0j])
-        return w[np.argsort(-w.real)]
+                return np.array([np.nan + 0j]), False
+            return w[np.argsort(-w.real)], False
+        return w[np.argsort(-w.real)], True
     w = np.linalg.eigvals(J)
-    return w[np.argsort(-w.real)]
+    return w[np.argsort(-w.real)], True
 
 
 def leading_rate(net: ReactionNetwork, x: np.ndarray, dilution: float,
                  eps: float | None = None) -> float:
-    """Re(lambda) of the leading eigenvalue (<0 for stable, ->0 critical)."""
-    return float(jacobian_eigs(net, x, dilution, eps)[0].real)
+    """Re(lambda) of the leading eigenvalue (<0 for stable, ->0 critical).
+
+    Returns NaN when the spectral solve did not fully converge — the
+    caller must treat the certification as unresolved rather than
+    trusting a truncated spectrum.
+    """
+    w, converged = jacobian_eigs(net, x, dilution, eps)
+    if not converged or not len(w):
+        return float("nan")
+    return float(w[0].real)
 
 
 def relaxation_rate_series(records: list[dict], lam_key: str = "lambda",
@@ -54,15 +67,21 @@ def relaxation_rate_series(records: list[dict], lam_key: str = "lambda",
     """Leading relaxation rate vs control parameter, from run records.
 
     Each record needs net (or net handle resolved by caller), lambda value,
-    and a certified x_eq. Returns array of (lam, re_lam1, n_neg_eigs).
+    and a certified x_eq. Returns array of (lam, re_lam1, n_neg_eigs,
+    converged). Rows whose spectral solve did not fully converge carry
+    re_lam1 = nan and converged = 0 — callers must not treat them as
+    stable.
     """
     out = []
     for rec in records:
         net = rec["net"]
         x = np.asarray(rec[x_key], float)
-        w = jacobian_eigs(net, x, rec["dilution"], rec.get("eps"))
-        out.append((float(rec[lam_key]), float(w[0].real),
-                    int(np.sum(w.real > -1e-9))))
+        w, converged = jacobian_eigs(net, x, rec["dilution"],
+                                     rec.get("eps"))
+        out.append((float(rec[lam_key]),
+                    float(w[0].real) if converged and len(w) else np.nan,
+                    int(np.sum(w.real > -1e-9)),
+                    float(converged)))
     return np.array(out)
 
 

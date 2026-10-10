@@ -31,7 +31,7 @@ that expectation falls below one copy.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 
 import numpy as np
 
@@ -50,10 +50,9 @@ def assembly_index(s: str, exact_limit: int = 12,
     if len(s) > exact_limit:
         return len(s) - 1, "bound"
 
-    chars = set(s)
     budget = [node_budget]
 
-    @lru_cache(maxsize=None)
+    @cache
     def f(needed: frozenset) -> int:
         if budget[0] <= 0:
             raise _BudgetExceeded
@@ -218,7 +217,11 @@ def derive_a_cut(length_masses: dict[int, float], volume: float,
     equiprobable (P = alphabet_size^{-L}), so the expected copy number of
     any specific string is
 
-        E[n_s] = volume * M_L^null * alphabet_size^{-L}
+        E[n_s] = volume * M_L^null * alphabet_size^{-L} / L
+
+    (M_L is a monomer-MASS concentration; one length-L molecule carries
+    L monomers, so per-sequence molecule concentration is M_L / (L *
+    |Sigma|^L)).
 
     with M_L^null ~ c * r^L fit by log-linear regression on the measured
     length spectrum.  L* is the first length with E < copies_floor, and
@@ -257,7 +260,7 @@ def derive_a_cut(length_masses: dict[int, float], volume: float,
     expected = {}
     L_star = None
     for L in range(1, max_L + 1):
-        e = volume * c * r ** L * alphabet_size ** (-L)
+        e = volume * c * r ** L * alphabet_size ** (-L) / float(L)
         expected[str(L)] = float(e)
         if e < copies_floor:
             L_star = L
@@ -277,7 +280,7 @@ def derive_a_cut(length_masses: dict[int, float], volume: float,
         # resolvable at this volume — the signature is vacuous, not
         # permissive. Increase V or the abiotic rate before interpreting.
         "vacuous": bool(a_cut <= 0),
-        "derivation": ("L* = first L with V*c*r^L*|Sigma|^-L < "
+        "derivation": ("L* = first L with V*c*r^L*|Sigma|^-L/L < "
                        "copies_floor; a_cut = L* - ma_to_length"),
     })
     return rec

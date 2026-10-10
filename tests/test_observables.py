@@ -74,7 +74,23 @@ def test_first_passage_dwell():
     o[10:16] = 0.9          # qualifies
     out = persistence.first_passage_times([(t, o)], theta_hi=0.6,
                                           dwell=4.0)
-    assert out[0][1] and out[0][0] == 14.0
+    # entry is credited at the first crossing, not end of dwell window
+    assert out[0][1] and out[0][0] == 10.0
+
+
+def test_first_passage_honors_censor_time():
+    # grid extends to t_max but the run was truncated at t=5 — censor
+    # time must be 5, not the padded grid endpoint 19
+    t = np.arange(20.0)
+    o = np.zeros(20)
+    out = persistence.first_passage_times([(t, o, 5.0)],
+                                          theta_hi=0.6, dwell=4.0)
+    assert out[0] == (5.0, False)
+    # state above threshold only after the censor time -> still censored
+    o[10:] = 0.9
+    out = persistence.first_passage_times([(t, o, 5.0)],
+                                          theta_hi=0.6, dwell=4.0)
+    assert out[0] == (5.0, False)
 
 
 def test_kaplan_meier_known():
@@ -172,13 +188,14 @@ def test_assembly_signature_explicit_cut():
 
 def test_derive_a_cut_synthetic():
     """Known null: M_L = 10*0.9^L, V=100, binary ->
-    E[L]=1000*0.45^L crosses 1 at L*=9, a_cut=7, extrapolated."""
+    E[L]=1000*0.45^L/L (per-molecule mass correction) crosses 1 at
+    L*=7, a_cut=5, extrapolated."""
     lm = {L: 10 * 0.9 ** L for L in range(1, 7)}
     rec = assembly.derive_a_cut(lm, volume=100.0, alphabet_size=2)
     assert rec["c"] == pytest.approx(10.0, rel=1e-6)
     assert rec["r"] == pytest.approx(0.9, rel=1e-6)
-    assert rec["L_star"] == 9
-    assert rec["a_cut"] == 7
+    assert rec["L_star"] == 7
+    assert rec["a_cut"] == 5
     assert rec["extrapolated"] and not rec["vacuous"]
 
 

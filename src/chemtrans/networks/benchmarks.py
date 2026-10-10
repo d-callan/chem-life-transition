@@ -63,6 +63,9 @@ def transcritical_motif(
         k_r=k_r,
         synth=True,
         mechanism="elongation",
+        # keq=inf => k_r=0: a declared driven irreversible limit, so
+        # check_detailed_balance reports rather than fails on it
+        driven=not np.isfinite(keq) or k_r <= 0,
     )
     net = ReactionNetwork(
         species, [ch], food,

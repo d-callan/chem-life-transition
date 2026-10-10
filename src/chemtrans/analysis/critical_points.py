@@ -7,7 +7,7 @@ critical points, no "first index where O jumps" estimators.
 Models (functions of control lam):
 
   null:    O = c0
-  ramp:    O = c0 + c1*(lam - lam0)
+  ramp:    O = c0 + c1*lam   (k=2; an explicit lam0 is non-identifiable)
   sigmoid: O = c0 + A / (1 + exp(-(lam - lc)/w))
   hinge:   O = c0 + A * max(0, lam - lc)                (continuous onset)
   fold:    O = c0           (lam < lf)
@@ -44,10 +44,9 @@ def _model_preds():
         "null": (lambda p, L: np.full_like(L, p["c0"]),
                  {"c0": None},
                  [{"c0": m} for m in np.linspace(0, 1, 3)]),
-        "ramp": (lambda p, L: p["c0"] + p["c1"] * (L - p["lam0"]),
-                 {"c0": None, "c1": None, "lam0": None},
-                 [{"c0": 0.1, "c1": s, "lam0": 0.0}
-                  for s in (0.5, 2.0)]),
+        "ramp": (lambda p, L: p["c0"] + p["c1"] * L,
+                 {"c0": None, "c1": None},
+                 [{"c0": 0.1, "c1": s} for s in (0.5, 2.0)]),
         "sigmoid": (lambda p, L: p["c0"] + p["A"] /
                     (1.0 + np.exp(np.clip(-(L - p["lc"]) / p["w"],
                                           -60.0, 60.0))),
@@ -80,13 +79,31 @@ def _free_keys(model: str) -> list[str]:
     return list(_model_preds()[model][1].keys())
 
 
+def _bounds(model: str, lam: np.ndarray):
+    """Physical parameter bounds for trust-region fitting, in
+    _free_keys(model) order. Critical points may lie up to 0.5 outside
+    the sampled window (onset between grid points) but not arbitrarily
+    far; rounding fields and widths are nonnegative."""
+    lo = float(lam.min()) - 0.5
+    hi = float(lam.max()) + 0.5
+    return {
+        "ramp": ([-np.inf, -np.inf], [np.inf, np.inf]),
+        "sigmoid": ([-np.inf, -np.inf, lo, 1e-4],
+                    [np.inf, np.inf, hi, 10.0]),
+        "hinge": ([-np.inf, 0.0, lo], [np.inf, np.inf, hi]),
+        "fold": ([-np.inf, -np.inf, 0.0, lo],
+                 [np.inf, np.inf, np.inf, hi]),
+        "itrans": ([-np.inf, 0.0, lo, 0.0],
+                   [np.inf, np.inf, hi, 100.0]),
+    }[model]
+
+
 def _fit_one(model: str, lam: np.ndarray, y: np.ndarray,
              weights: np.ndarray | None = None,
              seed: int = 0) -> FitResult:
     from scipy.optimize import least_squares
     pred_fn, proto, starts = _model_preds()[model]
     keys = _free_keys(model)
-    lam_mid = float(np.median(lam))
     rng = np.random.default_rng(seed)
     w = np.ones_like(y) if weights is None else np.asarray(weights, float)
 
@@ -94,17 +111,25 @@ def _fit_one(model: str, lam: np.ndarray, y: np.ndarray,
         return dict(zip(keys, v))
 
     best = None
+    # expand starts: an unspecified breakpoint (lc/lf) is tried at
+    # several quantiles of lam — the non-smooth landscape around the
+    # breakpoint makes bounded TRF far more start-sensitive than LM was
+    import itertools
+    start_grid: list[np.ndarray] = []
     for start in starts:
-        p0 = []
+        per_key = []
         for k in keys:
-            if k in ("lc", "lf", "lam0"):
-                p0.append(lam_mid if start.get(k) is None
-                          else start[k])
+            if k in ("lc", "lf"):
+                per_key.append(
+                    [start[k]] if start.get(k) is not None
+                    else list(np.quantile(lam, (0.25, 0.5, 0.75))))
             elif k == "c0" and start.get(k) is None:
-                p0.append(float(np.min(y)))
+                per_key.append([float(np.min(y))])
             else:
-                p0.append(start.get(k, 0.1))
-        p0 = np.array(p0, float)
+                per_key.append([start.get(k, 0.1)])
+        for combo in itertools.product(*per_key):
+            start_grid.append(np.array(combo, float))
+    for p0 in start_grid:
         if model == "null":
             theta = np.array([np.average(y, weights=w)])
             resid = (y - theta[0]) * np.sqrt(w)
@@ -114,7 +139,10 @@ def _fit_one(model: str, lam: np.ndarray, y: np.ndarray,
             def r(v):
                 return (pred_fn(unpack(v), lam) - y) * np.sqrt(w)
             try:
-                sol = least_squares(r, p0, method="lm", max_nfev=4000)
+                lb, ub = _bounds(model, lam)
+                sol = least_squares(
+                    r, np.clip(p0, lb, ub), bounds=(lb, ub),
+                    method="trf", max_nfev=4000)
             except Exception:
                 continue
             rss = float(sol.fun @ sol.fun)

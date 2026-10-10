@@ -12,12 +12,21 @@ structural analysis and kinetics stay consistent.
 
 Kinetics (single convention, used by ODE, Jacobian, and SSA alike):
 
-    forward flux  f_r(x) = k_f * prod_i x_i^{a_i} * (eps_r + kappa * sum_c x_c)
-    reverse flux  b_r(x) = k_r * prod_i x_i^{b_i} * (eps_r + kappa * sum_c x_c)
+    forward flux  f_r(x) = k_f * prod_i x_i^{a_i} * (bg_f + kappa * sum_c x_c^p)
+    reverse flux  b_r(x) = k_r * prod_i x_i^{b_i} * (bg_r + kappa * sum_c x_c^p)
 
-    eps_r = eps   if channel.synth  (spontaneous synthesis: the
-                                    symmetry-breaking "field")
-          = 1.0   otherwise         (decay channels are not eps-scaled)
+    bg_d = eps    if channel.synth AND direction d is in
+                  channel.synth_dir  (spontaneous synthesis: the
+                  symmetry-breaking "field")
+         = 1.0    otherwise         (decay directions are not eps-scaled)
+
+  - synth_dir selects WHICH direction carries the eps gate: "both"
+    (legacy: synthesis channels gated symmetrically), "fwd", or "rev".
+    A channel whose synthesis direction is the REVERSE (e.g. thermal
+    PA <=> P + A, where fwd is hydrolysis decay and rev is condensation
+    synthesis) uses synth_dir="rev": hydrolysis runs unconditionally at
+    eps=0 while condensation stays gated — the dead state remains
+    absorbing AND decay channels still run (Invariant 3).
 
   - Catalysis multiplies BOTH directions by the same factor, so it never
     changes K_eq = k_f/k_r (local detailed balance).
@@ -59,6 +68,15 @@ class Channel:
     synth: True if this channel's uncatalyzed component is scaled by the
         protocol parameter eps (spontaneous polymer synthesis). Decay
         channels (hydrolysis, fuel deactivation) use synth=False.
+    synth_dir: which direction the eps gate applies to when synth=True —
+        "both" (default; legacy symmetric gating), "fwd", or "rev".
+        Use a directional gate when synthesis and decay live in opposite
+        directions of one reversible channel (e.g. thermal
+        PA <=> P + A with synth_dir="rev": condensation gated,
+        hydrolysis always runs).
+    driven: True marks a deliberately irreversible driven-limit channel
+        (k_f == 0 or k_r == 0). check_detailed_balance reports it but
+        does not fail on it; an undeclared irreversible channel fails.
     mechanism: free-form label ("elongation", "thermal", "hydrolysis",
         "deactivation", "background", ...).
     """
@@ -70,6 +88,8 @@ class Channel:
     k_r: float = 0.0
     synth: bool = True
     mechanism: str = "background"
+    synth_dir: str = "both"
+    driven: bool = False
 
     @property
     def nu(self) -> dict[int, int]:
@@ -176,6 +196,10 @@ class ReactionNetwork:
                 raise ValueError("rates must be finite")
             if ch.k_f < 0 or ch.k_r < 0:
                 raise ValueError("rates must be nonnegative")
+            if ch.synth_dir not in ("fwd", "rev", "both"):
+                raise ValueError(
+                    f"synth_dir must be 'fwd'|'rev'|'both', "
+                    f"got {ch.synth_dir!r}")
             if (ch.k_f > 0) != (ch.k_r > 0) and (ch.k_f > 0 or ch.k_r > 0):
                 # one-way channels are allowed ONLY via k_r == 0 *or* k_f == 0
                 # explicitly; flag the asymmetric case loudly in params, but
@@ -286,12 +310,22 @@ class ReactionNetwork:
             self._cache["factors"] = (Rf, Rr, m)
         return self._cache["factors"]
 
-    def _rate_vectors(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _rate_vectors(self) -> tuple[np.ndarray, np.ndarray,
+                                     np.ndarray, np.ndarray]:
+        """(kf, kr, gate_f, gate_r): per-direction eps-gate flags.
+
+        gate_d[r] is True iff channel r's direction-d uncatalyzed
+        background is eps-scaled. synth_dir="rev" gates only the
+        reverse (e.g. thermal condensation) while the forward decay
+        direction runs unconditionally."""
         if "rates" not in self._cache:
             kf = np.array([ch.k_f for ch in self.channels])
             kr = np.array([ch.k_r for ch in self.channels])
-            synth = np.array([ch.synth for ch in self.channels])
-            self._cache["rates"] = (kf, kr, synth)
+            gate_f = np.array([ch.synth and ch.synth_dir != "rev"
+                               for ch in self.channels])
+            gate_r = np.array([ch.synth and ch.synth_dir != "fwd"
+                               for ch in self.channels])
+            self._cache["rates"] = (kf, kr, gate_f, gate_r)
         return self._cache["rates"]
 
     # ---------------- kinetics ---------------------------------------
@@ -302,14 +336,15 @@ class ReactionNetwork:
         x = np.asarray(x, dtype=float)
         x_app = np.append(x, 1.0)
         Rf, Rr, _ = self._factors()
-        kf, kr, synth = self._rate_vectors()
+        kf, kr, gate_f, gate_r = self._rate_vectors()
         C = self.catalysis_matrix()
-        bg = np.where(synth, eps, 1.0)
-        boost = bg + self.kappa * np.asarray(
+        cat = self.kappa * np.asarray(
             C @ np.power(x, self.cat_power)).ravel()
+        boost_f = np.where(gate_f, eps, 1.0) + cat
+        boost_r = np.where(gate_r, eps, 1.0) + cat
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
-        return kf * mf * boost, kr * mr * boost
+        return kf * mf * boost_f, kr * mr * boost_r
 
     def net_flux(self, x: np.ndarray, eps: float | None = None) -> np.ndarray:
         f, b = self.rates(x, eps)
@@ -337,9 +372,10 @@ class ReactionNetwork:
         n, nc = self.n_species, self.n_channels
         x_app = np.append(x, 1.0)
         Rf, Rr, m = self._factors()
-        kf, kr, synth = self._rate_vectors()
+        kf, kr, gate_f, gate_r = self._rate_vectors()
         C = self.catalysis_matrix()
-        bg = np.where(synth, eps, 1.0)
+        bg_f = np.where(gate_f, eps, 1.0)
+        bg_r = np.where(gate_r, eps, 1.0)
         Cx = np.asarray(
             C @ np.power(x, self.cat_power)).ravel()
         mf = np.prod(x_app[Rf], axis=1)
@@ -357,13 +393,13 @@ class ReactionNetwork:
                     [x_app[fac_f[q]] for q in range(len(fac_f)) if q != pos],
                     axis=0,
                 ) if len(fac_f) > 1 else 1.0
-                Df[r, s] += kf[r] * (bg[r] + self.kappa * Cx[r]) * others
+                Df[r, s] += kf[r] * (bg_f[r] + self.kappa * Cx[r]) * others
             for pos, s in enumerate(fac_r):
                 others = np.prod(
                     [x_app[fac_r[q]] for q in range(len(fac_r)) if q != pos],
                     axis=0,
                 ) if len(fac_r) > 1 else 1.0
-                Db[r, s] += kr[r] * (bg[r] + self.kappa * Cx[r]) * others
+                Db[r, s] += kr[r] * (bg_r[r] + self.kappa * Cx[r]) * others
             # catalysts contribute via boost: d(k*mass*kappa*x_c^p)/dx_c
             cat_idx = np.nonzero(C[r])[0]
             if len(cat_idx):
@@ -395,9 +431,10 @@ class ReactionNetwork:
         n, nc = self.n_species, self.n_channels
         x_app = np.append(x, 1.0)
         Rf, Rr, m = self._factors()
-        kf, kr, synth = self._rate_vectors()
+        kf, kr, gate_f, gate_r = self._rate_vectors()
         C = self.catalysis_matrix()
-        bg = np.where(synth, eps, 1.0)
+        bg_f = np.where(gate_f, eps, 1.0)
+        bg_r = np.where(gate_r, eps, 1.0)
         Cx = np.asarray(
             C @ np.power(x, self.cat_power)).ravel()
         mf = np.prod(x_app[Rf], axis=1)
@@ -407,9 +444,9 @@ class ReactionNetwork:
         rows_b, cols_b, data_b = [], [], []
         rr = np.arange(nc)
         for pos in range(m):
-            for R, xk, kvec, flux_m, rows, cols, data in (
-                    (Rf, x_app, kf, mf, rows_f, cols_f, data_f),
-                    (Rr, x_app, kr, mr, rows_b, cols_b, data_b)):
+            for R, xk, kvec, flux_m, bg, rows, cols, data in (
+                    (Rf, x_app, kf, mf, bg_f, rows_f, cols_f, data_f),
+                    (Rr, x_app, kr, mr, bg_r, rows_b, cols_b, data_b)):
                 s = R[:, pos]
                 mask = s < n
                 if not mask.any():
@@ -463,7 +500,12 @@ class ReactionNetwork:
     def check_detailed_balance(self, tol: float = 1e-6) -> dict:
         """Verify k_f/k_r == exp(-g . nu) per channel; also verify that a
         closed system with these g values is at equilibrium (report the
-        per-channel residual of K_eq consistency)."""
+        per-channel residual of K_eq consistency).
+
+        Irreversible channels (k_f == 0 xor k_r == 0) cannot satisfy
+        detailed balance on finite free energies. They are FAILED unless
+        explicitly declared with Channel(driven=True) — a labeled
+        driven-limit boundary process (e.g. benchmark source/sink)."""
         if self.g is None:
             raise ValueError("no free energies g on this network")
         rows = []
@@ -477,15 +519,27 @@ class ReactionNetwork:
                 nu[i] -= a
             dG = float(g @ nu)
             K = np.exp(-dG)
-            if ch.k_f > 0 and ch.k_r > 0:
-                ratio = ch.k_f / ch.k_r
-                rel = abs(ratio / K - 1.0)
+            if ch.k_f <= 0 or ch.k_r <= 0:
+                # an irreversible channel has infinite |dG|; it cannot
+                # satisfy k_f/k_r = exp(-dG) on finite g
                 rows.append(
-                    {"channel": r, "dG": dG, "K_eq": K, "kf/kr": ratio,
-                     "rel_err": rel, "mechanism": ch.mechanism}
+                    {"channel": r, "dG": dG, "K_eq": K,
+                     "k_f": ch.k_f, "k_r": ch.k_r,
+                     "error": "irreversible_channel",
+                     "declared_driven": bool(ch.driven),
+                     "mechanism": ch.mechanism}
                 )
-                if rel > tol:
+                if not ch.driven:
                     ok = False
+                continue
+            ratio = ch.k_f / ch.k_r
+            rel = abs(ratio / K - 1.0)
+            rows.append(
+                {"channel": r, "dG": dG, "K_eq": K, "kf/kr": ratio,
+                 "rel_err": rel, "mechanism": ch.mechanism}
+            )
+            if rel > tol:
+                ok = False
         return {"ok": ok, "channels": rows}
 
     def equilibrium_state(self) -> np.ndarray:
@@ -545,6 +599,8 @@ class ReactionNetwork:
                     "k_r": ch.k_r,
                     "synth": ch.synth,
                     "mechanism": ch.mechanism,
+                    "synth_dir": ch.synth_dir,
+                    "driven": ch.driven,
                 }
                 for ch in self.channels
             ],
@@ -566,6 +622,8 @@ class ReactionNetwork:
                 k_r=c["k_r"],
                 synth=c["synth"],
                 mechanism=c["mechanism"],
+                synth_dir=c.get("synth_dir", "both"),
+                driven=c.get("driven", False),
             )
             for c in d["channels"]
         ]
@@ -609,7 +667,7 @@ class ReactionNetwork:
         return self.with_channels(
             [
                 Channel(ch.reactants, ch.products, (), ch.k_f, ch.k_r,
-                        ch.synth, ch.mechanism)
+                        ch.synth, ch.mechanism, ch.synth_dir, ch.driven)
                 for ch in self.channels
             ]
         )

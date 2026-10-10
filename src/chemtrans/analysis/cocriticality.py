@@ -43,10 +43,30 @@ STRUCTURAL = ("O_raf",)
 DEFAULT_OBSERVABLES = CONTINUOUS + DISCRETE
 
 # map selected model -> (params key holding λc, transition class)
+# "fold" is handled specially: the model only counts as a saddle-node
+# when the fitted jump discontinuity c1-c0 is a real positive jump
+# (>= 10% of the data span). c1 ~ c0 makes it a continuous sqrt onset
+# (mean-field beta=1/2 second-order), c1 < c0 a downward jump — neither
+# is a first-order saddle-node and neither may be labeled one.
 _LC_MAP = {"hinge": ("lc", "onset"),
            "itrans": ("lc", "onset_imperfect"),
            "fold": ("lf", "saddle_node"),
            "sigmoid": ("lc", "crossover")}
+
+
+def _fold_class(params: dict, y: np.ndarray) -> str:
+    """Transition class for a selected 'fold' fit from its jump size.
+
+    The fold model is c0 below lf and c1 + A*sqrt(lam - lf) above, so
+    c1 - c0 is the discontinuity at the bifurcation. Only a positive
+    jump of >= 10% of the observed data span is a genuine first-order
+    saddle-node; a vanished or negative jump is a continuous sqrt
+    onset (beta = 1/2) or a downward discontinuity."""
+    span = float(y.max() - y.min()) if len(y) else 0.0
+    jump = float(params.get("c1", 0.0) - params.get("c0", 0.0))
+    if jump >= 0.1 * max(span, 1e-12):
+        return "saddle_node"
+    return "continuous_half_power"
 
 
 @dataclass
@@ -111,8 +131,21 @@ def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
     detail = {"selected": sel, "aicc": _clean_aicc(fit["aicc"])}
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
+        if sel == "fold":
+            # the model name is not the physics: verify the jump
+            cls = _fold_class(params, y)
+            detail["fold_jump"] = float(
+                params.get("c1", 0.0) - params.get("c0", 0.0))
         detail["delta_aicc"] = _clean_aicc(fit["delta_aicc"])
         lc = float(params[key])
+        # transition direction: monotone models go up ("onset") or
+        # down ("offset") across the grid — an emergence and an
+        # extinction at the same λ are opposite events, never a
+        # shared critical point
+        order = np.argsort(lam)
+        detail["direction"] = ("onset"
+                               if y[order][-1] > y[order][0]
+                               else "offset")
         # flag fits that extrapolate a critical point outside the
         # sampled grid — on near-flat data the fitter can place lc far
         # below/above the sweep, which is not a measurement
@@ -166,7 +199,12 @@ def _lc_discrete_family(lam: np.ndarray, y: np.ndarray) -> LcEstimate:
     This catches both 0->onset transitions AND structure changes
     (e.g. n_attractors 2->3) that a simple y>0 threshold misses when the
     observable is already active at the grid edge. A family whose value
-    never changes is 'always_active' (baseline > 0) or 'none'."""
+    never changes is 'always_active' (baseline > 0) or 'none'.
+
+    The transition direction ("onset" = value increased, "offset" =
+    decreased) is recorded in detail["direction"] — an emergence at λ
+    and an extinction at λ are NOT the same critical event and must
+    never be declared coincident."""
     order = np.argsort(lam)
     lam, y = np.asarray(lam)[order], np.asarray(y)[order]
     y0 = y[0]
@@ -176,9 +214,11 @@ def _lc_discrete_family(lam: np.ndarray, y: np.ndarray) -> LcEstimate:
             None, "always_active" if y0 > 0 else "none",
             {"baseline": float(y0)})
     i = int(chg[0])
+    direction = "onset" if y[i] > y0 else "offset"
     return LcEstimate(
-        float(lam[i]), "discrete_changepoint",
+        float(lam[i]), f"discrete_{direction}",
         {"baseline": float(y0),
+         "direction": direction,
          "new_value": float(y[i]),
          "lc_lo": float(lam[i - 1]) if i else None,
          "lc_hi": float(lam[i + 1]) if i + 1 < len(lam) else None})
@@ -256,26 +296,44 @@ def coincidence_report(by_net: dict[str, list[dict]],
     matrix = {}
     for j, oj in enumerate(observables):
         for ok in observables[j + 1:]:
-            diffs = {f: (per_fam[oj][f].lc - per_fam[ok][f].lc)
-                     for f in fams
-                     if f in per_fam[oj] and f in per_fam[ok]
-                     and per_fam[oj][f].lc is not None
-                     and per_fam[ok][f].lc is not None
-                     and not per_fam[oj][f].detail.get("extrapolated")
-                     and not per_fam[ok][f].detail.get("extrapolated")}
+            paired = [(f, per_fam[oj][f], per_fam[ok][f])
+                      for f in fams
+                      if f in per_fam[oj] and f in per_fam[ok]
+                      and per_fam[oj][f].lc is not None
+                      and per_fam[ok][f].lc is not None
+                      and not per_fam[oj][f].detail.get("extrapolated")
+                      and not per_fam[ok][f].detail.get("extrapolated")]
+            # an onset in one observable and an offset in the other at
+            # the same λ are opposite events, not a shared critical
+            # point — any such family disqualifies a coincidence claim
+            dir_mismatch = {
+                f for f, ej, ek in paired
+                if ej.detail.get("direction") and ek.detail.get("direction")
+                and ej.detail["direction"] != ek.detail["direction"]}
+            diffs = {f: ej.lc - ek.lc for f, ej, ek in paired
+                     if f not in dir_mismatch}
             n_pairs = len(diffs)
             entry = {"n_pairs": n_pairs,
                      "paired_diffs": {f: float(d)
-                                      for f, d in diffs.items()}}
+                                      for f, d in diffs.items()},
+                     "n_direction_mismatch": len(dir_mismatch)}
             if n_pairs == 0:
-                entry["verdict"] = "incomparable"
+                entry["verdict"] = ("discordant_direction"
+                                    if dir_mismatch else "incomparable")
             elif n_pairs <= exact_table_max:
                 d = np.asarray(list(diffs.values()))
                 mx, mn = float(np.abs(d).max()), float(np.abs(d).min())
                 if mx <= tol_pair:
-                    verdict = "coincident_within_tol"
-                elif mn > tol_pair:
+                    verdict = ("discordant_direction" if dir_mismatch
+                               else "coincident_within_tol")
+                elif np.all(d > tol_pair) or np.all(d < -tol_pair):
+                    # every family's diff clears tol in the SAME
+                    # direction — a consistent ordering of transitions
                     verdict = "separated"
+                elif mn > tol_pair:
+                    # all diffs large but in OPPOSITE directions:
+                    # bidirectional scatter, not an ordered cascade
+                    verdict = "discordant"
                 else:
                     verdict = "mixed"
                 entry.update({"verdict": verdict,
@@ -290,7 +348,8 @@ def coincidence_report(by_net: dict[str, list[dict]],
                 lo90, hi90 = np.quantile(boot, [0.05, 0.95])
                 lo95, hi95 = np.quantile(boot, [0.025, 0.975])
                 if lo90 >= -tol_pair and hi90 <= tol_pair:
-                    verdict = "coincident"          # TOST equivalence
+                    verdict = ("discordant_direction" if dir_mismatch
+                               else "coincident")   # TOST equivalence
                 elif lo95 > 0 or hi95 < 0:
                     verdict = "separated"
                 else:
@@ -388,7 +447,21 @@ def coincidence_2d(records: list[dict], secondary_param: str,
                 for k, dd in diffs_at_levels.items()
                 for d in dd.values()]
         within = sum(1 for _, d, t in flat if abs(d) <= t)
-        if n_levels_with_pairs < 2:
+        # "tracking" must be evidenced WITHIN a family: count families
+        # whose paired diff is defined at >= 2 secondary levels.
+        # Without one, within-tol agreement could be fabricated by
+        # pooling different families at different levels (fam A at
+        # level 1, fam B at level 2) — a shared locus no family
+        # actually exhibited.
+        fams_seen = sorted({f for dd in diffs_at_levels.values()
+                            for f in dd})
+        n_fam_multilevel = 0
+        for fam in fams_seen:
+            n_lv = sum(1 for k in diffs_at_levels if fam in
+                       diffs_at_levels[k])
+            if n_lv >= 2:
+                n_fam_multilevel += 1
+        if n_fam_multilevel == 0:
             verdict = "underdetermined"
         elif flat and within == len(flat):
             verdict = "tracking"
@@ -400,6 +473,7 @@ def coincidence_2d(records: list[dict], secondary_param: str,
                           "n_levels_with_pairs": n_levels_with_pairs,
                           "n_diffs_total": len(flat),
                           "n_diffs_within_tol": within,
+                          "n_families_multilevel": n_fam_multilevel,
                           "per_level": level_detail}
 
     # per-family λc trajectories along the secondary axis

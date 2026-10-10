@@ -15,7 +15,10 @@ Channels (all reversible, rates from species free energies g_i):
                                      (eps + kappa*x_C) — same factor both
                                      directions, so K_eq is untouched).
   thermal        PA <=> P + A        spontaneous condensation / hydrolysis;
-                                     dG = -g_bond; eps-scaled.
+                                     dG = -g_bond; condensation direction
+                                     eps-scaled, hydrolysis direction
+                                     always on (decay channels still run
+                                     at eps=0 — Invariant 3).
   ligation       P1 + P2 <=> P1P2    polymer-polymer block joining
                                      (len>=2 substrates only); dG = g_bond;
                                      eps-scaled; optional (ligation=True).
@@ -168,24 +171,28 @@ def polymer_network(
     u_info2 = rng.random((n_elong, m_extra))
     u_kin2 = rng.random((n_elong, m_extra))
 
+    cat_ceiling = cat_max_len or max_len
     candidates = [
         index[s]
         for s in strings
-        if min_cat_len <= len(s) <= (cat_max_len or max_len)
+        if min_cat_len <= len(s) <= cat_ceiling
     ]
     cand_strings = [
         s for s in strings
-        if min_cat_len <= len(s) <= (cat_max_len or max_len)
+        if min_cat_len <= len(s) <= cat_ceiling
     ]
 
     def pick_catalyst(u_s: float, u_i: float, u_k: float,
                       PA: str, iPA: int) -> int:
         """One catalyst slot under the nested self/kin/random policy.
 
-        Self-rep requires len(PA) >= min_cat_len — a product shorter than
-        the catalyst threshold may not catalyze its own formation
-        (otherwise min_cat_len has a self-rep leak)."""
-        if u_s < p_selfrep and len(PA) >= min_cat_len:
+        Self-rep requires min_cat_len <= len(PA) <= cat_max_len — a
+        product outside the catalyst-length window may not catalyze its
+        own formation (both bounds; a min-only gate leaks over-length
+        self-replicators). The random fallback never returns iPA:
+        self-catalysis is reachable only through the self-rep draw,
+        not as a hidden backdoor in the uniform pool."""
+        if u_s < p_selfrep and min_cat_len <= len(PA) <= cat_ceiling:
             return iPA
         if u_i < p_info:
             kin = [
@@ -194,7 +201,9 @@ def polymer_network(
             ]
             if kin:
                 return kin[int(u_k * len(kin))]
-        return candidates[int(u_k * len(candidates))]
+        pool = ([c for c in candidates if c != iPA]
+                if len(candidates) > 1 else candidates)
+        return pool[int(u_k * len(pool))]
 
     channels: list[Channel] = []
     e = 0
@@ -234,6 +243,12 @@ def polymer_network(
 
                 # --- thermal condensation / hydrolysis PA <=> P + A -----
                 # P may equal A (e.g. AA <=> A + A): merge stoichiometry.
+                # synth_dir="rev": the condensation direction (P + A ->
+                # PA) is the eps-gated synthesis; hydrolysis (PA ->
+                # P + A) is decay and runs unconditionally, so polymers
+                # still degrade at eps=0 while the dead state stays
+                # absorbing (Invariant 3). A bare synth=False would
+                # wrongly un-gate condensation too.
                 prods: dict[int, int] = {}
                 for i in (iP, index[A]):
                     prods[i] = prods.get(i, 0) + 1
@@ -244,6 +259,7 @@ def polymer_network(
                     catalysts=(),
                     k_f=k_hyd, k_r=k_hyd * np.exp(dG3),
                     synth=True, mechanism="thermal",
+                    synth_dir="rev",
                 ))
 
     # --- fragment ligation: P1 + P2 <=> P1P2 -------------------------

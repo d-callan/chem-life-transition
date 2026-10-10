@@ -114,21 +114,36 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
     sto = rec.get("stochastic")
     if sto and sto.get("replicates"):
         dwells = [r["dwell_organized"] for r in sto["replicates"]]
+        # a replicate only counts as a survivor if it WAS organized and
+        # never went extinct — an unorganized run has t_extinction=None
+        # and must not be scored as having "survived"
         n_surv = sum(1 for r in sto["replicates"]
-                     if r.get("t_extinction") is None)
+                     if r.get("t_first_organized") is not None
+                     and r.get("t_extinction") is None)
+        n_entered = sum(1 for r in sto["replicates"]
+                        if r.get("t_first_organized") is not None)
         out["O_persist"] = {
             "value": float(np.mean(dwells)), "defined": True,
             "kind": "continuous", "volume": sto["volume"],
-            "n_survive": n_surv, "n_reps": len(dwells)}
+            "n_survive": n_surv, "n_entered": n_entered,
+            "n_reps": len(dwells)}
     else:
         out["O_persist"] = _undefined("no stochastic block")
 
     # ---- O_hered: attractor diversity ---------------------------
     if ms is not None:
+        # n_attractors counts composition clusters only; branches with
+        # identical composition but different total mass (amplitude
+        # bistability) live in n_attractors_total and must count too
+        n_comp = int(ms["n_attractors"])
+        n_total = ms.get("n_attractors_total")
+        n_eff = max(n_comp, n_total) if n_total is not None else n_comp
         out["O_hered"] = {
-            "value": max(0, ms["n_attractors"] - 1), "defined": True,
-            "kind": "discrete", "n_attractors": ms["n_attractors"],
-            "n_attractors_total": ms.get("n_attractors_total"),
+            "value": max(0, n_eff - 1), "defined": True,
+            "kind": "discrete", "n_attractors": n_comp,
+            "n_attractors_total": n_total,
+            "amplitude_bistable": bool(n_total is not None
+                                       and n_total > n_comp),
             "n_kept": ms.get("n_kept")}
     else:
         out["O_hered"] = _undefined("no multistability block")
@@ -136,12 +151,22 @@ def life_vector(rec: dict, net: ReactionNetwork | None = None) -> dict:
     # ---- O_select: competition fixation bias --------------------
     comp = rec.get("competition")
     if comp is not None and comp.get("completed"):
+        proto_name = comp.get("init_protocol", "raw")
+        pinfo = comp.get("protocols", {}).get(proto_name, {})
         pa = comp.get("p_a_wins")
         if pa is not None:
+            p_ext = pinfo.get("p_extinct")
+            # survivor-conditioned bias alone turns a 97%-extinction
+            # run into "maximum selection"; discount by viability
+            sel = (abs(pa - 0.5) * (1.0 - p_ext)
+                   if p_ext is not None else abs(pa - 0.5))
             out["O_select"] = {
-                "value": abs(pa - 0.5), "defined": True,
+                "value": sel, "defined": True,
                 "kind": "probability", "scope": "conditional",
                 "condition": "O_hered > 0",
+                "p_a_wins_survivors": pa,
+                "p_extinct": p_ext,
+                "discount_rule": "(1 - p_extinct) * |p_a - 0.5|",
                 "n_reps": comp["n_reps"],
                 "init_protocol": comp.get("init_protocol")}
         else:

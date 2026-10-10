@@ -22,10 +22,10 @@ import time
 
 import numpy as np
 
+from .dynamics import gillespie, ode
+from .networks import benchmarks as bench
 from .networks.core import ReactionNetwork
 from .networks.generators import polymer_network
-from .networks import benchmarks as bench
-from .dynamics import gillespie, ode
 from .observables import assembly, closure, heredity, spectral
 from .provenance import run_id, sha256_json, strict_jsonable
 
@@ -106,10 +106,14 @@ def measure_run(task: dict) -> dict:
         "n_catalyzed_channels": int(sum(bool(c.catalysts)
                                         for c in net.channels)),
     }
-    rec["run_id"] = run_id(net.hash, {"gen": gen_spec, "reactor": reactor,
-                                      "eps": eps,
-                                      "stochastic": task.get("stochastic")},
-                           seed_key)
+    # run identity covers every analysis-affecting task key (assembly,
+    # competition, continuation, ...) — not just gen/reactor/eps/
+    # stochastic — so a task that differs only in an analysis block can
+    # never be silently skipped as "already done" on resume
+    task_identity = {k: v for k, v in task.items()
+                     if k not in ("seed_key", "name")}
+    task_identity["generator"] = gen_spec   # resolved seed included
+    rec["run_id"] = run_id(net.hash, task_identity, seed_key)
 
     # ---- structural block: always emitted (cheap; O_raf context) --
     core = closure.raf_reactions(net)
@@ -142,7 +146,7 @@ def measure_run(task: dict) -> dict:
         # group dominated by that letter (same rule as _ic_bank).
         pol = str(reactor["x0_policy"])
         letter = (pol.split(":", 1)[1] if ":" in pol
-                  else pol.rsplit("_", 1)[-1].upper())
+                  else pol.rsplit("_", 1)[-1]).upper()
         x0_det = _lineage_seed(net, seed_key, letter,
                                level=float(reactor.get("x0_level", 0.08)))
     else:
@@ -161,14 +165,22 @@ def measure_run(task: dict) -> dict:
             "success": det.success,
             "message": det.message,
             "nfev": det.nfev,
-            "residual_scaled_max": float(np.nanmax(det.residual_scaled)),
-            "window_change": det.window_change,
-            "material_error": det.material_error,
+            "residual_scaled_max": (
+                float(np.nanmax(det.residual_scaled))
+                if np.any(np.isfinite(det.residual_scaled)) else None),
+            "window_change": (float(det.window_change)
+                              if det.window_change is not None
+                              and np.isfinite(det.window_change)
+                              else None),
+            "material_error": (float(det.material_error)
+                               if det.material_error is not None
+                               and np.isfinite(det.material_error)
+                               else None),
         }
         if det.converged:
             x = det.x_eq
             obs = closure.phi_decomposition(net, x, eps)
-            eigs = spectral.jacobian_eigs(net, x, dilution, eps)
+            eigs, spec_conv = spectral.jacobian_eigs(net, x, dilution, eps)
             rec["equilibrium"] = {
                 "mass_raf": obs["mass_raf"],
                 "phi_gross": obs["phi_gross"],
@@ -176,7 +188,9 @@ def measure_run(task: dict) -> dict:
                 "phi_net": obs["phi_net"],
                 "denominators": obs["denominators"],
                 "n_raf_channels": obs["n_raf_channels"],
-                "leading_eig_re": float(eigs[0].real),
+                "leading_eig_re": (float(eigs[0].real)
+                                 if spec_conv and len(eigs) else None),
+                "spectral_converged": bool(spec_conv),
                 "scaled_resid_max": float(np.max(det.residual_scaled)),
                 "nonzero_mass_species": int(np.sum(x > 1e-10)),
                 "m_poly": _nonfood_mass(net, x),
@@ -205,64 +219,93 @@ def measure_run(task: dict) -> dict:
         n_cycles = int(reactor.get("n_cycles", 40))
         x0 = (x0_det if x0_det is not None
               else net.food_inlet.copy())
-        starts, ends = ode.sd_map(net, x0, tau, d_factor, n_cycles, eps)
-        # fixed-point check: start drift over last 5 cycles
-        drift = float(np.max(np.abs(starts[-1] - starts[-5])
-                             / (np.abs(starts[-5]) + 1e-12)))
-        stationary = drift < 1e-4
-        # propagation diagnostics: is the nonfood composition a
-        # persistent lineage signature across dilution cycles, or does
-        # it wander? comp_dist_cycle[i] = d_L1(sig_i, sig_{i-1}) on
-        # end-of-cycle states; a stable lineage -> ~0 asymptotically.
-        end_sigs = [heredity.attractor_signature(net, e) for e in ends]
-        comp_dist = [None] + [
-            heredity.compositional_distance(end_sigs[i],
-                                            end_sigs[i - 1])
-            for i in range(1, n_cycles)]
-        seed_sig = heredity.attractor_signature(net, x0)
-        dist_seed = heredity.compositional_distance(end_sigs[-1],
-                                                    seed_sig)
-        # compact lineage record: top-8 species of the final signature
-        fin = end_sigs[-1]
-        top = np.argsort(fin)[::-1][:8]
-        top = top[fin[top] > 0]
-        lin = [{"species": str(net.structure.get(i, i)),
-                "frac": float(fin[i])} for i in top]
-        rec["det"] = {"type": "sd", "tau": tau, "d_factor": d_factor,
-                      "n_cycles": n_cycles, "cycle_start_drift": drift,
-                      "m_poly_cycles": [
-                          float(_nonfood_mass(net, e)) for e in ends],
-                      "comp_dist_cycle": comp_dist,
-                      "comp_dist_to_seed": dist_seed,
-                      "final_signature_top": lin,
-                      "status": "STATIONARY" if stationary else
-                                "UNRESOLVED"}
-        if stationary:
-            if net.n_species <= 600:
-                mults = ode.sd_fixed_point_multipliers(
-                    net, starts[-1], tau, d_factor, eps)
-                floquet = {"floquet_max_abs": float(np.max(np.abs(mults))),
-                           "stable": bool(np.all(np.abs(mults) < 1.0))}
-            else:
-                # FD map Jacobian costs n integrations — infeasible
-                # at sparse scale; report as unverified rather than
-                # silently skipping
-                floquet = {"floquet_max_abs": None,
-                           "stable": None,
-                           "note": "floquet not computed at n>600"}
-            obs = closure.phi_decomposition(net, ends[-1], eps)
-            rec["equilibrium"] = {
-                "mass_raf": obs["mass_raf"],
-                "phi_gross": obs["phi_gross"],
-                "phi_cat": obs["phi_cat"],
-                "phi_net": obs["phi_net"],
-                **floquet,
-                "m_poly": _nonfood_mass(net, ends[-1]),
-                "x_eq": ends[-1],
+        starts, ends, sd_ok, sd_msg = ode.sd_map(
+            net, x0, tau, d_factor, n_cycles, eps)
+        if not sd_ok:
+            # graceful solver-failure record — same contract as the CSTR
+            # path (strict-JSON-safe status, no crash, partial cycles kept)
+            rec["det"] = {
+                "type": "sd", "tau": tau, "d_factor": d_factor,
+                "n_cycles": n_cycles,
+                "n_cycles_completed": len(starts),
+                "status": "UNRESOLVED",
+                "message": sd_msg,
             }
         else:
-            obs = closure.phi_decomposition(net, ends[-1], eps)
-            rec["final_state"] = {"mass_raf": obs["mass_raf"]}
+            # fixed-point check: CONSECUTIVE start drift over the last
+            # cycles. Comparing starts[-1] to starts[-5] aliases
+            # period-2/4 orbits onto fixed points (same phase evaluates
+            # drift = 0).
+            k_tail = min(4, n_cycles - 1)
+            drift = float(max(
+                np.max(np.abs(starts[c] - starts[c - 1])
+                       / (np.abs(starts[c - 1]) + 1e-12))
+                for c in range(n_cycles - 1, n_cycles - 1 - k_tail, -1)))
+            stationary = drift < 1e-4
+            # propagation diagnostics: is the nonfood composition a
+            # persistent lineage signature across dilution cycles, or
+            # does it wander? comp_dist_cycle[i] = d_L1(sig_i, sig_{i-1})
+            # on end-of-cycle states; a stable lineage -> ~0
+            # asymptotically.
+            end_sigs = [heredity.attractor_signature(net, e)
+                        for e in ends]
+            comp_dist = [None] + [
+                heredity.compositional_distance(end_sigs[i],
+                                                end_sigs[i - 1])
+                for i in range(1, n_cycles)]
+            seed_sig = heredity.attractor_signature(net, x0)
+            dist_seed = heredity.compositional_distance(end_sigs[-1],
+                                                        seed_sig)
+            # compact lineage record: top-8 species of the final signature
+            fin = end_sigs[-1]
+            top = np.argsort(fin)[::-1][:8]
+            top = top[fin[top] > 0]
+            lin = [{"species": str(net.structure.get(i, i)),
+                    "frac": float(fin[i])} for i in top]
+            rec["det"] = {"type": "sd", "tau": tau,
+                          "d_factor": d_factor,
+                          "n_cycles": n_cycles,
+                          "cycle_start_drift": drift,
+                          "m_poly_cycles": [
+                              float(_nonfood_mass(net, e)) for e in ends],
+                          "comp_dist_cycle": comp_dist,
+                          "comp_dist_to_seed": dist_seed,
+                          "final_signature_top": lin,
+                          "status": "STATIONARY" if stationary else
+                                    "UNRESOLVED"}
+            if stationary:
+                if net.n_species <= 600:
+                    mults = ode.sd_fixed_point_multipliers(
+                        net, starts[-1], tau, d_factor, eps)
+                    if mults is not None:
+                        floquet = {
+                            "floquet_max_abs": float(
+                                np.max(np.abs(mults))),
+                            "stable": bool(np.all(np.abs(mults) < 1.0))}
+                    else:
+                        floquet = {"floquet_max_abs": None,
+                                   "stable": None,
+                                   "note": "floquet solve failed"}
+                else:
+                    # FD map Jacobian costs n integrations — infeasible
+                    # at sparse scale; report as unverified rather than
+                    # silently skipping
+                    floquet = {"floquet_max_abs": None,
+                               "stable": None,
+                               "note": "floquet not computed at n>600"}
+                obs = closure.phi_decomposition(net, ends[-1], eps)
+                rec["equilibrium"] = {
+                    "mass_raf": obs["mass_raf"],
+                    "phi_gross": obs["phi_gross"],
+                    "phi_cat": obs["phi_cat"],
+                    "phi_net": obs["phi_net"],
+                    **floquet,
+                    "m_poly": _nonfood_mass(net, ends[-1]),
+                    "x_eq": ends[-1],
+                }
+            else:
+                obs = closure.phi_decomposition(net, ends[-1], eps)
+                rec["final_state"] = {"mass_raf": obs["mass_raf"]}
     else:
         raise ValueError(f"unknown reactor type {rtype!r}")
 
@@ -368,7 +411,14 @@ def measure_run(task: dict) -> dict:
                                  if len(idx_ext) else None),
                 "t_absorbing": (float(res.t[idx_abs[0]])
                                 if len(idx_abs) else None),
-                "dwell_organized": float(organized[mask].mean()),
+                # dwell as a fraction of the intended horizon t_max:
+                # a run truncated while organized at t < t_max is NOT
+                # 100% dwell — the unobserved remainder is not credited
+                "dwell_organized": min(1.0, float(
+                    organized[mask].sum()
+                    * res.diagnostics["record_dt"]
+                    / max(t_max, 1e-12))),
+                "dwell_untruncated": bool(not res.truncated),
             })
         rec["stochastic"] = {
             "volume": volume, "replicates": reps,
@@ -449,9 +499,26 @@ def _continuation_block(net: ReactionNetwork, reactor: dict,
     t_max = float(cont.get("t_max", reactor.get("t_max", 200.0)))
 
     branches = {}
+    rev_reseeded = False
     x = (np.asarray(x0_det, float).copy() if x0_det is not None
          else net.food_inlet.copy())
     for direction, seq in (("fwd", values), ("rev", values[::-1])):
+        # At eps == 0 a dead fwd endpoint is absorbing: uncatalyzed
+        # synthesis is zero, so warm-starting the rev branch from it
+        # can never re-ignite and hysteresis_width is always None.
+        # Reseed the rev branch once from the organized reactor seed
+        # (or a dense nonfood seed if none) to probe the lower
+        # spinodal. The eps actually used at the first rev point is
+        # seq[0] when the swept parameter IS eps.
+        eps_start = seq[0] if param == "eps" else eps
+        if (direction == "rev" and eps_start == 0.0
+                and _nonfood_mass(net, x) < floor):
+            x = (np.asarray(x0_det, float).copy()
+                 if x0_det is not None else net.food_inlet.copy())
+            if _nonfood_mass(net, x) < floor:
+                x = net.food_inlet.copy()
+                x[~net.is_food] = 0.15
+            rev_reseeded = True
         rows = []
         for lam in seq:
             kw = {"dilution": dilution, "eps": eps}
@@ -464,7 +531,7 @@ def _continuation_block(net: ReactionNetwork, reactor: dict,
         branches[direction] = rows
 
     out = {"param": param, "values": values, "mass_floor": floor,
-           "branches": branches}
+           "branches": branches, "rev_reseeded": rev_reseeded}
     transitions = {}
     for direction in ("fwd", "rev"):
         rows = branches[direction]
@@ -481,12 +548,40 @@ def _continuation_block(net: ReactionNetwork, reactor: dict,
             transitions[direction] = None
     out["transitions"] = transitions
     tf, tr = transitions["fwd"], transitions["rev"]
-    if tf and tr:
-        # fold pair located -> hysteresis window between the spinodals
+
+    # Genuine hysteresis requires the two branches to occupy DIFFERENT
+    # states at the same control value. A single-valued response curve
+    # that crosses mass_floor always produces one fwd flip and one rev
+    # flip separated by exactly one grid step — that is a threshold
+    # bracket, not a fold pair. Verify branch divergence at common lams.
+    fwd_by_lam = {row["lam"]: row["m_poly"] for row in branches["fwd"]}
+    rev_by_lam = {row["lam"]: row["m_poly"] for row in branches["rev"]}
+    common_lams = sorted(set(fwd_by_lam) & set(rev_by_lam))
+    state_diffs = {lam: abs(fwd_by_lam[lam] - rev_by_lam[lam])
+                   for lam in common_lams}
+    max_branch_diff = max(state_diffs.values()) if state_diffs else 0.0
+    bistable_lams = [lam for lam, d in state_diffs.items()
+                     if d > 2.0 * floor]
+    out["max_branch_diff"] = float(max_branch_diff)
+    out["n_bistable_points"] = len(bistable_lams)
+
+    if tf and tr and bistable_lams:
+        # fold pair located AND branch states actually diverge ->
+        # hysteresis window between the spinodals
         out["hysteresis_width"] = abs(tf["lam"] - tr["lam"])
         out["spinodal_fwd"], out["spinodal_rev"] = tf["lam"], tr["lam"]
+        out["bistable_window"] = [float(min(bistable_lams)),
+                                  float(max(bistable_lams))]
+    elif tf and tr:
+        # both branches crossed the floor, but states coincide at every
+        # shared lam -> single-valued response, NOT hysteresis
+        out["hysteresis_width"] = None
+        out["spinodal_fwd"] = out["spinodal_rev"] = None
+        out["note"] = ("no genuine branch bifurcation detected "
+                       "(single-valued response)")
     else:
         out["hysteresis_width"] = None
+        out["spinodal_fwd"] = out["spinodal_rev"] = None
         out["note"] = ("no fold pair located within the sweep; widen "
                        "values or check mass_floor")
     return out
@@ -584,8 +679,10 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
     for x, k in zip(eqs, organized_ic):
         if _nonfood_mass(net, x) < min_mass:
             continue
-        eigs = spectral.jacobian_eigs(net, x, dilution, eps)
-        if eigs[0].real < 0:
+        eigs, spec_conv = spectral.jacobian_eigs(net, x, dilution, eps)
+        # a partially-converged spectrum may be missing the leading
+        # unstable eigenvalue — do not certify stability on it
+        if spec_conv and eigs[0].real < 0:
             stable_eqs.append(x)
             stable_ic.append(k)
     cl = heredity.cluster_attractors(net, stable_eqs, tol=0.05,
@@ -667,13 +764,25 @@ def _competition_block(net: ReactionNetwork, dilution: float,
     t_max = float(cspec.get("t_max", 400.0))
     tol = float(cspec.get("tol", 0.05))
 
-    xA = np.asarray(ms_block["attractor_x0"]["0"], float)
-    xB = np.asarray(ms_block["attractor_x0"]["1"], float)
+    # caller may nominate the competing attractor pair (cluster ids as
+    # strings); default is the first two certified attractors
+    c_pair = [str(c) for c in cspec.get("attractor_pair", ("0", "1"))]
+    if any(c not in ms_block["attractor_x0"] for c in c_pair):
+        return {"completed": False,
+                "reason": "requested_attractor_pair_not_certified"}
+    xA = np.asarray(ms_block["attractor_x0"][c_pair[0]], float)
+    xB = np.asarray(ms_block["attractor_x0"][c_pair[1]], float)
     sigs = [heredity.attractor_signature(net, xA),
             heredity.attractor_signature(net, xB)]
     m_target = min(_nonfood_mass(net, xA), _nonfood_mass(net, xB))
+    # signatures are monomer-mass fractions; dividing by monomer mass
+    # per molecule converts the equal-mass target into molecular
+    # concentrations — counts_from_concentration takes molecule counts
+    comp_mass = (net.comp.sum(axis=0) if net.comp is not None
+                 else np.ones(net.n_species))
 
     out = {"completed": True, "volume": volume, "n_reps": n_reps,
+           "attractor_pair": c_pair,
            "attractor_labels": ms_block["attractor_top_species"],
            "protocols": {}}
     for pname, n0f in (
@@ -681,6 +790,7 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                 0.5 * (xA + xB), V)),
             ("eq_mass", lambda V: gillespie.counts_from_concentration(
                 0.5 * m_target * (sigs[0] + sigs[1])
+                / np.maximum(comp_mass, 1.0)
                 + net.food_inlet, V))):
         n0 = n0f(volume)
         counts = {"A": 0, "B": 0, "dead": 0, "other": 0}
@@ -706,9 +816,12 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                              "truncated": res.truncated,
                              "censor_time": res.censor_time})
         n_ab = counts["A"] + counts["B"]
+        n_total = len(rep_rows)
         out["protocols"][pname] = {
             "counts": counts, "n_decided": n_ab,
             "p_a_wins": (counts["A"] / n_ab if n_ab else None),
+            "p_extinct": counts["dead"] / n_total,
+            "p_other": counts["other"] / n_total,
             "reps": rep_rows}
     # headline: raw protocol asymmetry (None if undecided)
     raw = out["protocols"]["raw"]

@@ -190,9 +190,13 @@ def serial_transfer_test(
     dist_post_dilution = []
     dist_post_recovery = []
     mass_post_recovery = []
+    failure = None
     for _ in range(n_cycles):
-        sol = ode_mod.sd_map(net, x, tau, d_factor, 1, eps)
-        batch_end = sol[1][0]                    # end of batch, pre-dilution
+        _, ends, ok, msg = ode_mod.sd_map(net, x, tau, d_factor, 1, eps)
+        if not ok:
+            failure = msg
+            break
+        batch_end = ends[0]                      # end of batch, pre-dilution
         x_next = ode_mod.sd_step(net, batch_end, d_factor)
         dist_post_dilution.append(
             compositional_distance(sig_ref,
@@ -202,11 +206,16 @@ def serial_transfer_test(
                                    attractor_signature(net, batch_end)))
         mass_post_recovery.append(float(w @ np.maximum(batch_end, 0.0)))
         x = x_next
-    return {
+    out = {
         "dist_post_dilution": dist_post_dilution,
         "dist_post_recovery": dist_post_recovery,
         "mass_post_recovery": mass_post_recovery,
         "n_cycles": n_cycles,
+        "n_cycles_completed": len(dist_post_dilution),
         "d_factor": d_factor,
         "tau": tau,
     }
+    if failure is not None:
+        out["status"] = "UNRESOLVED"
+        out["message"] = failure
+    return out

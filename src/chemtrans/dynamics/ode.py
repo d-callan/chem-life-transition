@@ -267,10 +267,12 @@ def integrate_cstr(
                         t_eval=t_eval, rtol=1e-8, atol=1e-11)
         nfev += sol.nfev
         if not sol.success:
+            # strict-JSON-safe: zeros/None, never NaN — the caller must
+            # be able to serialize this record as a failed run
             return ODEResult(np.array([t]), x[None, :], False,
                              f"solver failed: {sol.message}", nfev,
-                             "UNRESOLVED", np.full(n, np.nan), np.nan,
-                             np.nan, None, eps, dilution)
+                             "UNRESOLVED", np.zeros(n), None,
+                             None, None, eps, dilution)
         ts.append(sol.t)
         xs.append(sol.y.T)
         x_new = np.maximum(sol.y[:, -1], 0.0)
@@ -313,7 +315,11 @@ def integrate_cstr(
 
     # Always attempt a Newton polish: a slow-drifting trajectory may still
     # sit in the basin of a certifiable fixed point. Conversely a
-    # trajectory-flagged 'converged' point must still pass polish.
+    # trajectory-flagged 'converged' point must still pass polish — if
+    # polish was requested and failed, the window-flagged endpoint is NOT
+    # certified (revoke convergence rather than emit an unpolished root).
+    polished = False
+    polish_note = ""
     if polish:
         if net.use_sparse:
             # trust-region Newton with Krylov inner solves — uses the
@@ -327,7 +333,8 @@ def integrate_cstr(
                                            dilution, eps),
                 method="trf", tr_solver="lsmr",
                 xtol=1e-11, ftol=1e-11, gtol=1e-11, max_nfev=300)
-            xp, polish_ok = np.maximum(sol_ls.x, 0.0), True
+            xp = np.maximum(sol_ls.x, 0.0)
+            polish_ok = bool(sol_ls.success)   # lsmr can exit unconverged
         else:
             sol = scipy_root(
                 lambda y: rhs_cstr(net, np.maximum(y, 0.0),
@@ -335,34 +342,67 @@ def integrate_cstr(
                 x, jac=lambda y: net.jacobian(np.maximum(y, 0.0),
                                               dilution, eps),
                 method="hybr")
-            xp, polish_ok = np.maximum(sol.x, 0.0), sol.success
+            xp, polish_ok = np.maximum(sol.x, 0.0), bool(sol.success)
         pr = _scaled_residual(rhs_cstr(net, xp, dilution, eps),
                               xp, conv_atol, conv_rtol)
-        if polish_ok and np.all(pr <= 1.0) and \
-                np.all(np.isfinite(xp)):
+        polished = bool(polish_ok and np.all(pr <= 1.0)
+                        and np.all(np.isfinite(xp)))
+        if polished:
             x, resid_end, converged = xp, pr, True
+        else:
+            polish_note = ("trajectory passed window test but root "
+                           "polish failed" if converged else
+                           "root polish failed; trajectory endpoint "
+                           "not certified")
+            converged = False
 
     if converged:
         x_eq = x
         ttype = "STATIONARY"
         message = ("converged (componentwise residual + window"
-                   + (", root-polished" if polish else "") + ")")
+                   + (", root-polished" if polished else "") + ")")
+    elif (not np.all(np.isfinite(resid_end))
+          or not np.all(np.isfinite(X))
+          or np.max(np.abs(x)) > 1e10):
+        # runaway is checked FIRST: a diverging trajectory has large
+        # last-window amplitude by construction, so ordering it after
+        # the oscillation check mislabels divergence as oscillation
+        ttype = "RUNAWAY"
+        message = "unbounded growth / nonfinite residual"
     else:
-        # oscillatory check: does the last window repeat its range?
+        # positive periodicity check: sustained amplitude AND a
+        # near-repeated range between window halves AND low correlation
+        # with time (a monotone slow drift fails both halves)
         w = X[-n_eval:]
         p2p = w.max(axis=0) - w.min(axis=0)
         span = np.abs(w.mean(axis=0)) + conv_atol
-        if np.max(p2p / span) > osc_amp_tol and np.all(
-                np.isfinite(resid_end)):
+        amp_rel = float(np.max(p2p / span))
+        half = len(w) // 2
+        w1, w2 = w[:half], w[half:2 * half]
+        mean_diff = float(np.max(
+            np.abs(w1.mean(axis=0) - w2.mean(axis=0)) / span))
+        t_w = t_all[-n_eval:]
+        t_c = t_w - t_w.mean()
+        drift_corr = 0.0
+        for j in range(net.n_species):
+            if p2p[j] / span[j] <= osc_amp_tol:
+                continue
+            sj = np.std(w[:, j])
+            if sj <= 0:
+                continue
+            drift_corr = max(drift_corr, abs(float(
+                np.corrcoef(t_c, w[:, j])[0, 1])))
+        if amp_rel > osc_amp_tol and mean_diff < 0.05 \
+                and drift_corr < 0.8:
             ttype = "OSCILLATORY"
-            message = "nonconverged with sustained oscillation amplitude"
-        elif not np.all(np.isfinite(resid_end)) or np.max(
-                np.abs(x)) > 1e12:
-            ttype = "RUNAWAY"
-            message = "unbounded growth / nonfinite residual"
+            message = "nonconverged with periodic oscillation"
         else:
-            message = ("no componentwise convergence within t_max "
-                       "(slow drift)")
+            ttype = "UNRESOLVED"
+            if polish_note:
+                message = polish_note
+            else:
+                message = ("no componentwise convergence within t_max "
+                           "(slow drift)")
 
     return ODEResult(t_all, X, True, message, nfev, ttype, resid_end,
                      float(wchange) if 'wchange' in dir() else np.nan,
@@ -391,12 +431,14 @@ def sd_map(
     d_factor: float,
     n_cycles: int,
     eps: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, bool, str]:
     """Iterate the SD map: integrate closed batch for tau, then dilute.
 
-    Returns (cycle_states, states_after_each_dilution): cycle_states[i] is
-    the state at the START of cycle i (post-dilution).
-    """
+    Returns (starts, ends, ok, message): starts[i]/ends[i] are the
+    post-dilution / end-of-batch states of cycle i. On solver failure,
+    returns the cycles completed so far with ok=False — callers must
+    emit UNRESOLVED records rather than crash (mirrors the CSTR
+    solver-failure contract)."""
     if eps is None:
         eps = net.eps
     x = np.asarray(x0, dtype=float).copy()
@@ -414,10 +456,12 @@ def sd_map(
             rtol=1e-8, atol=1e-11,
         )
         if not sol.success:
-            raise RuntimeError(f"SD batch integration failed: {sol.message}")
+            return (starts[:c], ends[:c], False,
+                    (f"SD batch integration failed at cycle {c}: "
+                     f"{sol.message}"))
         ends[c] = np.maximum(sol.y[:, -1], 0.0)
         x = sd_step(net, ends[c], d_factor)
-    return starts, ends
+    return starts, ends, True, "ok"
 
 
 def sd_fixed_point_multipliers(
@@ -434,6 +478,7 @@ def sd_fixed_point_multipliers(
     dilution step). |mu| > 1 => unstable fixed point of the map.
     """
     n = net.n_species
+    failed = {"flag": False}
 
     def one_cycle(x):
         sol = solve_ivp(
@@ -441,12 +486,19 @@ def sd_fixed_point_multipliers(
             @ net.net_flux(np.maximum(y, 0.0), eps),
             (0.0, tau), np.maximum(x, 0.0), method="LSODA",
             rtol=1e-9, atol=1e-12)
+        if not sol.success:
+            failed["flag"] = True
+            return sd_step(net, np.maximum(x, 0.0), d_factor)
         return sd_step(net, np.maximum(sol.y[:, -1], 0.0), d_factor)
 
     J = np.empty((n, n))
     f0 = one_cycle(x_star)
     for j in range(n):
+        if failed["flag"]:
+            return None
         e = np.zeros(n)
         e[j] = h * max(1.0, abs(x_star[j]))
         J[:, j] = (one_cycle(x_star + e) - f0) / e[j]
+    if failed["flag"]:
+        return None
     return np.linalg.eigvals(J)

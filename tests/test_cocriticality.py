@@ -63,7 +63,7 @@ def test_life_vector_full_record():
 def test_multistability_deterministic():
     """Same seed_key -> identical attractor count and centers."""
     task = {"generator": dict(P2_GEN), "eps": 0.0,
-            "seed_key": "e1land|net3",
+            "seed_key": "e1land|net28",
             "reactor": {"type": "cstr", "dilution": 0.5,
                         "multistability": {"n_ic": 16,
                                            "min_mass": 0.01,
@@ -92,14 +92,16 @@ def test_competition_undefined_when_monostable():
 
 
 def test_competition_mixture_init_equal_mass():
-    """eq_mass protocol seeds equal monomer mass per lineage."""
+    """eq_mass protocol seeds equal monomer mass per lineage:
+    mass-fraction signatures are converted to molecule concentrations
+    by dividing by per-species monomer mass."""
     from chemtrans.measure import (_multistability_block, _nonfood_mass,
                                    derive_seed)
     from chemtrans.dynamics import gillespie
     net = polymer_network(**{k: v for k, v in P2_GEN.items()
                              if k != "kind"},
-                          seed=derive_seed("e1land|net3|gen"))
-    ms = _multistability_block(net, 0.5, 0.0, "e1land|net3",
+                          seed=derive_seed("e1land|net28|gen"))
+    ms = _multistability_block(net, 0.5, 0.0, "e1land|net28",
                                n_ic=16, min_mass=0.01, t_max=600.0)
     assert ms["n_attractors"] >= 2
     xA = np.array(ms["attractor_x0"]["0"])
@@ -107,14 +109,25 @@ def test_competition_mixture_init_equal_mass():
     sigA = heredity.attractor_signature(net, xA)
     sigB = heredity.attractor_signature(net, xB)
     m_t = min(_nonfood_mass(net, xA), _nonfood_mass(net, xB))
+    comp_mass = net.comp.sum(axis=0)
+    vol = 1024.0   # large V keeps integer-rounding error negligible
     n0 = gillespie.counts_from_concentration(
-        0.5 * m_t * (sigA + sigB) + net.food_inlet, 64.0)
-    xf = n0 / 64.0
-    # each lineage contributes exactly m_t/2 of nonfood mass
-    sig = heredity.attractor_signature(net, xf)
-    dA = heredity.compositional_distance(sig, sigA)
-    dB = heredity.compositional_distance(sig, sigB)
-    assert dA == pytest.approx(dB, abs=0.05)
+        0.5 * m_t * (sigA + sigB) / np.maximum(comp_mass, 1.0)
+        + net.food_inlet, vol)
+    xf = n0 / vol
+    # realized monomer-mass concentration vector, projected onto the
+    # two lineage signature axes: each lineage should carry m_t/2.
+    # (The pre-fix code skipped the /comp_mass conversion and realized
+    # ~L times too much mass, skewed toward longer species.)
+    comp_mass_nf = np.where(net.is_food, 0.0, comp_mass)
+    m_real = comp_mass_nf * xf
+    assert float(m_real.sum()) == pytest.approx(m_t, rel=0.1)
+    G = np.array([[sigA @ sigA, sigA @ sigB],
+                  [sigA @ sigB, sigB @ sigB]])
+    b = np.array([sigA @ m_real, sigB @ m_real])
+    cA, cB = np.linalg.solve(G, b)
+    assert float(cA) == pytest.approx(0.5 * m_t, rel=0.1)
+    assert float(cB) == pytest.approx(0.5 * m_t, rel=0.1)
 
 
 def _synthetic_net_series(lc, n_nets=4, n_pts=11, span=(0.5, 1.6)):
@@ -245,3 +258,109 @@ def test_coincidence_2d_needs_two_levels():
         r["sweep"] = {"kappa": 0.0}
     rep = cc.coincidence_2d(recs, "kappa")
     assert rep["status"] == "insufficient_levels"
+
+
+def test_fold_continuous_sqrt_not_saddle_node():
+    """A fold fit with c1 ~ c0 is a CONTINUOUS beta=1/2 onset, not a
+    first-order saddle-node — the model name is not the physics."""
+    rng = np.random.default_rng(5)
+    lam = np.linspace(0, 1, 40)
+    y = np.where(lam < 0.55, 0.2,
+                 0.2 + 0.5 * np.sqrt(np.maximum(lam - 0.55, 0)))
+    y += 0.002 * rng.standard_normal(40)
+    est = cc.estimate_lc_continuous(lam, y, seed=0)
+    assert est.detail["selected"] == "fold"
+    assert est.transition_class == "continuous_half_power"
+    assert abs(est.detail["fold_jump"]) < 0.1 * (y.max() - y.min())
+
+
+def test_fold_real_jump_is_saddle_node():
+    """A genuine positive jump discontinuity keeps the saddle_node
+    class."""
+    rng = np.random.default_rng(2)
+    lam = np.linspace(0, 1, 40)
+    y = np.where(lam < 0.55, 0.02,
+                 0.7 + 0.4 * np.sqrt(np.maximum(lam - 0.55, 0)))
+    y += 0.002 * rng.standard_normal(40)
+    est = cc.estimate_lc_continuous(lam, y, seed=0)
+    assert est.detail["selected"] == "fold"
+    assert est.transition_class == "saddle_node"
+    assert est.detail["fold_jump"] > 0.1 * (y.max() - y.min())
+
+
+def test_continuation_monostable_no_hysteresis():
+    """A single-valued response curve crossing mass_floor produces one
+    fwd flip and one rev flip one grid step apart — that is a bracket,
+    NOT a fold pair. The strictly reversible transcritical motif must
+    report hysteresis_width=None."""
+    from chemtrans.measure import _continuation_block
+    from chemtrans.networks.benchmarks import transcritical_motif
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+    # organized state as warm start: C present
+    x0 = net.food_inlet.copy()
+    x0[2] = 0.5
+    # dilution axis: organized at low D, dead at high D; D_c = k_f*kappa
+    values = [0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8, 3.2]
+    reactor = {"type": "cstr", "dilution": 0.5, "t_max": 400.0,
+               "continuation": {"param": "dilution", "values": values,
+                                "mass_floor": 0.05}}
+    out = _continuation_block(net, reactor, dilution=0.5, eps=0.01,
+                              x0_det=x0)
+    assert out["hysteresis_width"] is None
+    assert out["max_branch_diff"] < 1e-6
+    assert "single-valued" in out["note"] or \
+        "no fold pair" in out["note"]
+
+
+def test_sd_solver_failure_is_unresolved_record(monkeypatch):
+    """A solve_ivp failure inside sd_map must produce a strict-JSON
+    UNRESOLVED record with partial cycle count, not crash."""
+    from chemtrans.dynamics import ode as ode_mod
+    from chemtrans.provenance import strict_jsonable
+
+    class _Bad:
+        success = False
+        message = "mocked stiff failure"
+        y = None
+
+    monkeypatch.setattr(ode_mod, "solve_ivp", lambda *a, **k: _Bad())
+    task = {"generator": dict(P2_GEN), "eps": 0.0,
+            "seed_key": "sdfail|net0",
+            "reactor": {"type": "sd", "tau": 2.0, "d_factor": 2.0,
+                        "n_cycles": 10}}
+    rec = measure_run(task)
+    assert rec["det"]["status"] == "UNRESOLVED"
+    assert rec["det"]["n_cycles_completed"] == 0
+    assert "failed" in rec["det"]["message"]
+    strict_jsonable(rec)      # must not raise: no NaN/inf in record
+
+
+def test_serial_transfer_failure_is_unresolved(monkeypatch):
+    """serial_transfer_test must return partial cycles + UNRESOLVED
+    rather than raising when a batch integration fails."""
+    from chemtrans.dynamics import ode as ode_mod
+    net = polymer_network(**{k: v for k, v in P2_GEN.items()
+                             if k != "kind"}, seed=3)
+    x0 = net.food_inlet.copy()
+    x0[~net.is_food] = 0.1
+    calls = {"n": 0}
+    real_ivp = ode_mod.solve_ivp
+
+    class _Bad:
+        success = False
+        message = "mocked"
+        y = None
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            return _Bad()
+        return real_ivp(*a, **k)
+
+    monkeypatch.setattr(ode_mod, "solve_ivp", flaky)
+    out = heredity.serial_transfer_test(
+        net, x0, tau=1.0, d_factor=2.0, n_cycles=5, eps=0.0)
+    assert out["status"] == "UNRESOLVED"
+    assert out["n_cycles_completed"] == 1
+    assert len(out["dist_post_dilution"]) == 1

@@ -3,8 +3,11 @@
 Processes (expanded from channels, single source of truth):
 
   per channel r with participant multiset alpha (fwd) / beta (rev):
-    background fwd:  k = k_f * (eps if synth else 1),  participants alpha
-    background rev:  k = k_r * (eps if synth else 1),  participants beta
+    background fwd:  k = k_f * (eps if fwd direction gated else 1)
+    background rev:  k = k_r * (eps if rev direction gated else 1)
+    (synth_dir selects which direction carries the eps gate — a thermal
+    PA <=> P + A channel with synth_dir="rev" keeps hydrolysis running
+    at eps=0 while condensation stays gated)
     catalyzed fwd by c in catalysts: k = k_f * kappa,  participants alpha+[c]
     catalyzed rev by c:              k = k_r * kappa,  participants beta+[c]
 
@@ -67,10 +70,11 @@ def build_processes(net: ReactionNetwork, dilution: float,
         nu = ch.nu
         fwd_delta = tuple(sorted(nu.items()))
         rev_delta = tuple(sorted((i, -a) for i, a in nu.items()))
-        bg = eps if ch.synth else 1.0
+        bg_f = eps if (ch.synth and ch.synth_dir != "rev") else 1.0
+        bg_r = eps if (ch.synth and ch.synth_dir != "fwd") else 1.0
         for direction, parts, delta, k in (
-                ("fwd", ch.factors("fwd"), fwd_delta, ch.k_f * bg),
-                ("rev", ch.factors("rev"), rev_delta, ch.k_r * bg)):
+                ("fwd", ch.factors("fwd"), fwd_delta, ch.k_f * bg_f),
+                ("rev", ch.factors("rev"), rev_delta, ch.k_r * bg_r)):
             if k > 0:
                 procs.append(Process(
                     rate=k, participants=parts, offsets=_mk_offsets(list(parts)),

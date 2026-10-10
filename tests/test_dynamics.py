@@ -4,8 +4,7 @@ convergence, exact SSA bookkeeping."""
 import numpy as np
 
 from chemtrans.dynamics import gillespie, ode
-from chemtrans.networks.benchmarks import (
-    immigration_death, transcritical_motif)
+from chemtrans.networks.benchmarks import immigration_death, transcritical_motif
 from chemtrans.networks.core import Channel, ReactionNetwork
 from chemtrans.networks.generators import polymer_network
 
@@ -137,9 +136,10 @@ def test_sparse_path_bitwise_equivalent():
     """Sparse mode must reproduce dense-path results: S, C, rates,
     d_rates, Jacobian, and the certified equilibrium."""
     from chemtrans.networks.core import ReactionNetwork
-    kw = dict(max_len=4, alphabet_size=2, p_cat=0.6, p_info=0.7,
-              p_selfrep=0.3, ligation=True, n_cat_max=3, p_multi=0.5,
-              chi=0.7, delta_mu=4.0, kappa=500.0, cat_power=2, seed=5)
+    kw = {"max_len": 4, "alphabet_size": 2, "p_cat": 0.6,
+          "p_info": 0.7, "p_selfrep": 0.3, "ligation": True,
+          "n_cat_max": 3, "p_multi": 0.5, "chi": 0.7, "delta_mu": 4.0,
+          "kappa": 500.0, "cat_power": 2, "seed": 5}
     nd = polymer_network(**kw)
     ns = ReactionNetwork(nd.species, nd.channels, nd.food,
                          structure=nd.structure, comp=nd.comp,
@@ -185,3 +185,114 @@ def test_sparse_cstr_equilibrium_matches_dense():
                             eps=0.0)
     assert rs.trajectory_type == rd.trajectory_type == "STATIONARY"
     np.testing.assert_allclose(rs.x_eq, rd.x_eq, atol=1e-8, rtol=1e-5)
+
+
+def _failing_root(fun, x0, jac=None, method=None):
+    class _S:
+        success = False
+        message = "mocked polish failure"
+        x = np.asarray(x0, float) + 1e-3
+    return _S()
+
+
+def test_polish_failure_revokes_dense_certification(monkeypatch):
+    """A trajectory that passes the window test but fails root polish
+    must NOT emit x_eq — the certificate is revoked, not silently
+    kept on the unpolished endpoint."""
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+    ok = ode.integrate_cstr(net, t_max=300.0, dilution=0.5)
+    assert ok.converged, ok.message          # sanity: trajectory+polish
+    monkeypatch.setattr(ode, "scipy_root", _failing_root)
+    r = ode.integrate_cstr(net, t_max=300.0, dilution=0.5)
+    assert not r.converged
+    assert r.trajectory_type == "UNRESOLVED"
+    assert r.x_eq is None
+    assert "polish" in r.message
+    assert "root-polished" not in r.message
+
+
+def test_sparse_polish_uses_solver_status(monkeypatch):
+    """Sparse least_squares polish must honor sol.success — no
+    hard-coded polish_ok=True."""
+    import scipy.optimize as opt
+    kw = {"max_len": 4, "alphabet_size": 2, "p_cat": 0.5,
+          "p_selfrep": 0.3, "delta_mu": 4.0, "chi": 0.7, "kappa": 500.0,
+          "cat_power": 2, "seed": 5, "eps": 0.0}
+    ns = polymer_network(**kw, sparse=True)
+    x0 = ns.food_inlet.copy()
+    x0[~ns.is_food] = 0.15
+    ok = ode.integrate_cstr(ns, t_max=200.0, dilution=0.3, x0=x0,
+                            eps=0.0)
+    assert ok.converged, ok.message          # sanity: real polish works
+
+    class _LS:
+        success = False
+        status = 0
+        message = "mocked lsmr nonconvergence"
+        x = None
+
+    def fake_ls(fun, x0_, jac=None, **kws):
+        s = _LS()
+        s.x = np.asarray(x0_, float) + 1e-4
+        return s
+
+    monkeypatch.setattr(opt, "least_squares", fake_ls)
+    r = ode.integrate_cstr(ns, t_max=200.0, dilution=0.3, x0=x0,
+                           eps=0.0)
+    assert not r.converged
+    assert r.trajectory_type == "UNRESOLVED"
+    assert r.x_eq is None
+
+
+def test_sd_map_solver_failure_returns_partial(monkeypatch):
+    """sd_map must return partial cycles + ok=False on solver failure,
+    not raise — campaign workers record UNRESOLVED, not crash."""
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+    calls = {"n": 0}
+    real_ivp = ode.solve_ivp
+
+    class _Bad:
+        success = False
+        message = "mocked stiff failure"
+        y = None
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] >= 3:
+            return _Bad()
+        return real_ivp(*a, **k)
+
+    monkeypatch.setattr(ode, "solve_ivp", flaky)
+    starts, ends, ok, msg = ode.sd_map(
+        net, net.food_inlet.copy(), tau=1.0, d_factor=2.0, n_cycles=5)
+    assert not ok
+    assert len(starts) == len(ends) == 2
+    assert "failed" in msg
+
+
+def test_sd_map_all_success_unchanged():
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+    starts, ends, ok, msg = ode.sd_map(
+        net, net.food_inlet.copy(), tau=1.0, d_factor=2.0, n_cycles=4)
+    assert ok and msg == "ok"
+    assert starts.shape == ends.shape == (4, net.n_species)
+
+
+def test_sd_multipliers_none_on_failure(monkeypatch):
+    """Floquet FD must return None rather than a garbage Jacobian when
+    a one-cycle integration fails."""
+    net, _ = transcritical_motif(f_inlet=1.0, k_lig=1.0, kappa=2.0,
+                                 keq=np.inf, eps=0.01)
+
+    class _Bad:
+        success = False
+        message = "mocked"
+        y = None
+
+    monkeypatch.setattr(ode, "solve_ivp", lambda *a, **k: _Bad())
+    out = ode.sd_fixed_point_multipliers(
+        net, net.food_inlet.copy(), tau=1.0, d_factor=2.0, eps=0.01)
+    assert out is None

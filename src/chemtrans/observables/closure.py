@@ -71,24 +71,39 @@ def raf_species(net: ReactionNetwork) -> set[int]:
 
 
 def kinetic_accessible(net: ReactionNetwork) -> set[int]:
-    """Channels that can fire at all: reactants reachable when uncatalyzed
-    rates (eps-scaled) and catalyst availability are respected. Uses full
-    channel set, eps-aware. Kinetic accessibility != RAF membership."""
-    if net.eps > 0:
-        return {r for r, ch in enumerate(net.channels)
-                if ch.k_f > 0 or ch.k_r > 0}
-    # eps == 0: only catalyzed channels can run, gated by catalyst presence
-    R = {r for r, ch in enumerate(net.channels) if ch.catalysts}
-    while True:
-        cl = _closure(net, R)
-        pruned = {
-            r for r in R
-            if all(i in cl for i, _ in net.channels[r].reactants)
-            and any(c in cl for c in net.channels[r].catalysts)
-        }
-        if pruned == R:
-            return R
-        R = pruned
+    """Channels that can fire at all: reactants reachable from food under
+    eps-scaled rates and catalyst availability. Uses a food-generated
+    reachability closure; kinetic accessibility != RAF membership.
+
+    At eps > 0 every channel fires once its reactants are reachable
+    (the eps background term supplies uncatalyzed synthesis). At
+    eps == 0 a channel needs a reachable catalyst only when its FORWARD
+    direction carries the eps gate (synth_dir in {"fwd", "both"});
+    non-synth channels and decay-forward channels (deactivation,
+    thermal hydrolysis with synth_dir="rev" — bg = 1.0 on the forward
+    direction) always fire once reactants are present.
+    """
+    avail = set(net.food)
+    accessible: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for r, ch in enumerate(net.channels):
+            if r in accessible:
+                continue
+            if ch.k_f <= 0 and ch.k_r <= 0:
+                continue
+            if not all(i in avail for i, _ in ch.reactants):
+                continue
+            if net.eps == 0 and ch.synth and ch.synth_dir != "rev" \
+                    and not any(c in avail for c in ch.catalysts):
+                continue
+            accessible.add(r)
+            new = {i for i, _ in ch.products} - avail
+            if new:
+                avail |= new
+                changed = True
+    return accessible
 
 
 def phi_decomposition(
@@ -113,14 +128,15 @@ def phi_decomposition(
     core_idx = np.array(sorted(core), dtype=int)
 
     # which flux is catalyzed vs background? decompose boost factors:
-    # f_r = k_f*mass*(bg + kappa*Cx) -> catalyzed part = k_f*mass*kappa*Cx
+    # f_r = k_f*mass*(bg + kappa*C x^p) -> catalyzed part uses the same
+    # cat_power nonlinearity as rates() (x^p, not x)
     Rf, Rr, _ = net._factors()
-    kf, kr, synth = net._rate_vectors()
+    kf, kr, _gate_f, _gate_r = net._rate_vectors()
     x_app = np.append(x, 1.0)
     mf = np.prod(x_app[Rf], axis=1)
     mr = np.prod(x_app[Rr], axis=1)
     cat_amp = net.kappa * np.asarray(
-        net.catalysis_matrix() @ x).ravel()
+        net.catalysis_matrix() @ np.power(x, net.cat_power)).ravel()
     cat_f = kf * mf * cat_amp
     cat_b = kr * mr * cat_amp
 

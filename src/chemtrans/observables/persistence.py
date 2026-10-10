@@ -40,35 +40,47 @@ def region_state(t: np.ndarray, o: np.ndarray,
 
 
 def first_passage_times(
-    series: list[tuple[np.ndarray, np.ndarray]],
+    series: list[tuple],
     theta_hi: float,
     dwell: float,
     theta_lo: float | None = None,
 ) -> list[tuple[float, bool]]:
     """Dwell-conditioned first-entry times into the organized region.
 
-    Entry is credited when the hysteretic region state stays ON for
-    `dwell` units of time continuously. Returns [(t_entry, True)] for
-    observed entries, [(t_censor, False)] for censored trajectories.
+    Each item is ``(t, o)`` or ``(t, o, censor_time)``; when given,
+    ``censor_time`` is the true end of observation (e.g. an SSA run
+    truncated by max_events) — points after it are ignored and the
+    censor time is recorded, never the padded grid endpoint.
+
+    Entry is credited at the FIRST crossing time ``on_time`` once the
+    hysteretic region state stays ON for `dwell` units of time
+    continuously — not at the end of the dwell window. Returns
+    [(t_entry, True)] for observed entries, [(t_censor, False)] for
+    censored trajectories.
     """
     if theta_lo is None:
         theta_lo = theta_hi
     out = []
-    for t, o in series:
+    for item in series:
+        t, o = item[0], item[1]
+        censor_t = (float(item[2]) if len(item) > 2
+                    and item[2] is not None else float(t[-1]))
         t = np.asarray(t, float)
         state = region_state(t, o, theta_hi, theta_lo)
         entry = None
         on_time = None
         for k in range(len(t)):
+            if t[k] > censor_t:
+                break
             if state[k]:
                 if on_time is None:
                     on_time = t[k]
                 if t[k] - on_time >= dwell:
-                    entry = t[k]
+                    entry = on_time
                     break
             else:
                 on_time = None
-        out.append((entry if entry is not None else float(t[-1]),
+        out.append((entry if entry is not None else censor_t,
                     entry is not None))
     return out
 
