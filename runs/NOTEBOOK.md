@@ -478,3 +478,26 @@ model lacks: a folding/competence filter (only some sequences CAN
 template), mismatch-dependent abort rates, or strand displacement
 competition. The error-threshold story needs a fidelity-cost knob
 (delta_g_mismatch sweep) or sequence-length-dependent recognition.
+
+---
+
+## Folding competence + non-pairing C — IMPLEMENTED
+
+Per `docs/IMPLEMENTATION_PLAN_FOLDING_AND_PURIFICATION.md` (see §8 for
+as-built divergences):
+
+- `pair_score(a,b)`: Watson-Crick A.B / B.A only; self-pairs and all
+  C-involving pairs are mismatches. `alphabet_size` relaxed to >=2 —
+  letters beyond B are abiotic non-pairing junk by construction.
+- `hairpin_fold_stability` / `folded_fraction`: intramolecular
+  stem-loop (s[k] pairs s[L-1-k], min loop 2), two-state Boltzmann
+  occupancy. delta_g_fold=0 disables folding entirely (f_fold=1).
+- Effective template weight w_eff = f_fold(T) * w_pair(T, P12):
+  catalyst must BOTH fold AND match the product. Gate is soft —
+  attenuates rather than excludes.
+- Observables added to sequence_sparsity dicts: ab_purity,
+  mean_stem_pairs, comp_pairs_in_top (reciprocal-pair detection).
+- Campaigns launched: `folding_l6` (K2 L6, delta_g_fold
+  {0,1,2,3.5,5} x 8 seeds, 40 cells) and `purify_l5` (K3 L5,
+  templated x delta_g_mismatch {1,2,3} x 4 seeds, 24 cells;
+  f_dimer=0.3 feeds a dirty C-contaminated soup).

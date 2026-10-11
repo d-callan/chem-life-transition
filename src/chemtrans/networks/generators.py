@@ -81,6 +81,54 @@ def _complement(s: str) -> str:
     return s.translate(_COMP_TABLE)
 
 
+def pair_score(a: str, b: str) -> int:
+    """1 for a Watson-Crick pair (A.B or B.A); 0 otherwise —
+    mismatches, self-pairs, and every pair involving a non-pairing
+    letter (C and beyond: abiotic 'junk' monomers with no complement).
+    """
+    return 1 if (a == "A" and b == "B") or (a == "B" and b == "A") else 0
+
+
+def hairpin_fold_stability(
+    s: str,
+    delta_g_fold: float,
+    delta_g_fold_mm: float = 2.0,
+    delta_g_loop: float = 1.0,
+    l_loop_min: int = 2,
+) -> float:
+    """dG_fold (kT) for intramolecular hairpin: pair s[k] with
+    s[L-1-k] inward, leaving >= l_loop_min in the central turn.
+    Negative = fold favored; positive = unfolded coil favored."""
+    L = len(s)
+    l_stem = (L - l_loop_min) // 2
+    if l_stem <= 0:
+        return 10.0
+    m = sum(pair_score(s[k], s[L - 1 - k]) for k in range(l_stem))
+    u = l_stem - m
+    return -m * delta_g_fold + u * delta_g_fold_mm + delta_g_loop
+
+
+def folded_fraction(
+    s: str,
+    delta_g_fold: float,
+    delta_g_fold_mm: float = 2.0,
+    delta_g_loop: float = 1.0,
+) -> float:
+    """Two-state Boltzmann fraction of strand in the folded state.
+    delta_g_fold <= 0 disables the folding physics entirely
+    (f_fold = 1.0, legacy behavior) — with zero stem stabilization
+    there is no folded state to occupy."""
+    if delta_g_fold <= 0.0:
+        return 1.0
+    dg = hairpin_fold_stability(s, delta_g_fold, delta_g_fold_mm,
+                                delta_g_loop)
+    if dg >= 30.0:
+        return 0.0
+    if dg <= -30.0:
+        return 1.0
+    return float(1.0 / (1.0 + np.exp(dg)))
+
+
 def polymer_network(
     alphabet_size: int = 2,
     max_len: int = 4,
@@ -100,6 +148,9 @@ def polymer_network(
     delta_g_mismatch: float = 2.0,
     w_max_template: float = 100.0,
     w_min_template: float = 1.5,
+    delta_g_fold: float = 0.0,
+    delta_g_fold_mm: float = 2.0,
+    delta_g_loop: float = 1.0,
     delta_mu: float = 4.0,
     chi: float = 1.0,
     f_inlet: float = 1.0,
@@ -183,9 +234,10 @@ def polymer_network(
     if templated_ligation:
         if not ligation:
             raise ValueError("templated_ligation requires ligation=True")
-        if alphabet_size != 2:
+        if alphabet_size < 2:
             raise ValueError(
-                "templated_ligation supports alphabet_size=2 only")
+                "templated_ligation needs alphabet_size>=2 "
+                "(Watson-Crick pair A<->B; letters >= C are non-pairing)")
         if not np.isfinite(delta_g_pair) or delta_g_pair < 0:
             raise ValueError("delta_g_pair must be nonnegative")
         if not np.isfinite(delta_g_mismatch) or delta_g_mismatch < 0:
@@ -193,6 +245,12 @@ def polymer_network(
         if not (0.0 < w_min_template <= w_max_template):
             raise ValueError(
                 "need 0 < w_min_template <= w_max_template")
+        if not np.isfinite(delta_g_fold) or delta_g_fold < 0:
+            raise ValueError("delta_g_fold must be nonnegative")
+        if not np.isfinite(delta_g_fold_mm) or delta_g_fold_mm < 0:
+            raise ValueError("delta_g_fold_mm must be nonnegative")
+        if not np.isfinite(delta_g_loop) or delta_g_loop < 0:
+            raise ValueError("delta_g_loop must be nonnegative")
 
     food_inlet = np.zeros(n)
     for a in alphabet:
@@ -361,25 +419,32 @@ def polymer_network(
             cats: tuple[int, ...] = ()
             cat_w: tuple[float, ...] = ()
             if templated_ligation:
-                # Watson-Crick template affinity: a strand T catalyzes
-                # P1+P2 -> P12 with weight exp(m*dg_pair - u*dg_mm),
-                # where m/u are match/mismatch counts against the
-                # complement of P12. Replaces the random catalyst
-                # lottery — potency is derived from string syntax.
-                comp12 = _complement(p12)
+                # Watson-Crick template affinity gated by folding
+                # competence: a strand T catalyzes P1+P2 -> P12 with
+                # weight f_fold(T) * exp(m*dg_pair - u*dg_mm), where
+                # m/u are Watson-Crick match/mismatch counts against
+                # P12 (non-pairing letters like C are always mismatch)
+                # and f_fold is the two-state hairpin occupancy.
+                # Replaces the random catalyst lottery — potency is
+                # derived from string syntax alone.
                 t_idx, t_w = [], []
                 for s in strings:
                     if len(s) != len(p12):
                         continue
                     st = s
-                    m = sum(1 for k in range(len(st))
-                            if st[k] == comp12[k])
+                    f_fold = folded_fraction(
+                        st, delta_g_fold, delta_g_fold_mm, delta_g_loop)
+                    if f_fold < 1e-4:
+                        continue
+                    m = sum(pair_score(st[k], p12[k])
+                            for k in range(len(st)))
                     u = len(st) - m
                     z = m * delta_g_pair - u * delta_g_mismatch
                     w = (w_max_template if z >= np.log(w_max_template)
                          else float(np.exp(z)))
-                    if w >= w_min_template:
-                        t_idx.append(index[st]); t_w.append(w)
+                    w_eff = f_fold * w
+                    if w_eff >= w_min_template:
+                        t_idx.append(index[st]); t_w.append(w_eff)
                 if t_idx:
                     order = np.argsort(t_idx)
                     cats = tuple(t_idx[o] for o in order)
@@ -444,6 +509,9 @@ def polymer_network(
             delta_g_mismatch=delta_g_mismatch,
             w_max_template=w_max_template,
             w_min_template=w_min_template,
+            delta_g_fold=delta_g_fold,
+            delta_g_fold_mm=delta_g_fold_mm,
+            delta_g_loop=delta_g_loop,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
             kappa=kappa, cat_power=cat_power,
             cat_len_power=cat_len_power, k_inhibit=k_inhibit,

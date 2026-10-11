@@ -190,7 +190,7 @@ def test_validation_rejects_bad_params():
         polymer_network(**GEN, templated_ligation=True)
     with pytest.raises(ValueError, match="alphabet"):
         polymer_network(**GEN, **LIG, templated_ligation=True,
-                        alphabet_size=3)
+                        alphabet_size=1)
     with pytest.raises(ValueError):
         polymer_network(**GEN, **LIG, templated_ligation=True,
                         delta_g_pair=-1.0)

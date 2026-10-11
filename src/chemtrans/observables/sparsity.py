@@ -41,7 +41,9 @@ def sequence_entropy(net, x: np.ndarray, length: int,
     out = {"length": length, "n_sequences": int(len(idx)),
            "entropy": 0.0, "entropy_max": h_max,
            "n_eff": 1.0, "sparsity": None, "top_sequences": [],
-           "pool_mass": 0.0, "neg_mass_abs": 0.0}
+           "pool_mass": 0.0, "neg_mass_abs": 0.0,
+           "ab_purity": None, "mean_stem_pairs": None,
+           "comp_pairs_in_top": []}
     if len(idx) == 0:
         return out
     xi = x[idx]
@@ -67,7 +69,40 @@ def sequence_entropy(net, x: np.ndarray, length: int,
          "concentration": float(xi[pos])}
         for pos in pos_order[:top_k]
     ]
+    # alphabet purification: fraction of pool mass in pure {A,B}
+    # sequences (non-pairing letters like C are 'abiotic junk')
+    ab_mask = np.array([
+        all(ch in "AB" for ch in net.species[i]) for i in idx])
+    if ab_mask.any():
+        out["ab_purity"] = float(xi[ab_mask].sum() / tot)
+        # folding enrichment: mass-weighted hairpin stem-pair count
+        stems = np.array([_stem_pairs(net.species[i]) for i in idx])
+        out["mean_stem_pairs"] = float((p * stems).sum())
+        # reciprocal-pair co-enrichment: complementary pairs within
+        # the top-k mass leaders (candidate replicating hypercycles)
+        top_s = [t["species"] for t in out["top_sequences"]]
+        out["comp_pairs_in_top"] = [
+            [a, b] for a in top_s for b in top_s
+            if a < b and _is_complement(a, b)]
     return out
+
+
+def _is_complement(a: str, b: str) -> bool:
+    """Pointwise Watson-Crick complement: every position pairs.
+    Requires both strings pure {A,B} — any C is always mismatch."""
+    if len(a) != len(b):
+        return False
+    return all((x == "A" and y == "B") or (x == "B" and y == "A")
+               for x, y in zip(a, b))
+
+
+def _stem_pairs(s: str, l_loop_min: int = 2) -> int:
+    """Intramolecular hairpin stem matches: s[k] vs s[L-1-k]."""
+    L = len(s)
+    l_stem = (L - l_loop_min) // 2
+    return sum(1 for k in range(l_stem)
+               if (s[k] == "A" and s[L - 1 - k] == "B")
+               or (s[k] == "B" and s[L - 1 - k] == "A"))
 
 
 def sparsity_report(net, x: np.ndarray,
