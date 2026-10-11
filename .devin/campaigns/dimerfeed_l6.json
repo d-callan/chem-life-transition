@@ -1,0 +1,46 @@
+{
+  "name": "dimerfeed_l6",
+  "experiment": "environmental_oligomer_feed_x_ligation_L6",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "alphabet_size": 2,
+      "max_len": 6,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 500.0,
+      "cat_power": 2,
+      "min_cat_len": 2,
+      "cat_len_power": 2.0,
+      "ligation": true,
+      "p_cat_lig": 0.5,
+      "k_join": 10.0,
+      "f_dimer": 0.0
+    },
+    "eps": 0.0,
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.5,
+      "t_max": 600.0,
+      "x0_policy": "dense",
+      "polymer_retention": 0.9,
+      "retention_len_scale": 0.0,
+      "multistability": {"n_ic": 12, "min_mass": 0.01}
+    }
+  },
+  "sweeps": [
+    {"param": "generator.f_dimer",
+     "values": [0.0, 0.2, 0.4]},
+    {"param": "generator.ligation",
+     "values": [false, true]},
+    {"param": "reactor.polymer_retention",
+     "values": [0.8, 0.95]}
+  ],
+  "seed_keys": ["e1land|net3", "e1land|net7", "catret|net0", "catret|net1"],
+  "order_parameter": "equilibrium.m_poly",
+  "out_dir": "data/pilots"
+}

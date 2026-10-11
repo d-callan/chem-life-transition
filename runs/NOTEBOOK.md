@@ -363,3 +363,20 @@ cannot substitute for pathway *structure*. Long chains need a direct
 kinetic route (fragment ligation — `ligation=True` is already in the
 generator) or an essential functional role (energetic stabilization,
 exclusive catalytic niche), not just disadvantages on short chains.
+
+---
+
+## Environmental dimer feed (f_dimer) — first L>=4 ignition
+
+Per `docs/IMPLEMENTATION_PLAN_LIGATION_AND_ENV_FEED.md` (IMPLEMENTED):
+
+- `generator.f_dimer` in [0,1): fraction of inlet letter flux arriving
+  as pre-formed dimers (environmental background chemistry). Fed via
+  `net.inlet_species` — dimers stay non-food for order parameters;
+  SSA feeds seeded over `food | inlet_species`. f_dimer=0 legacy.
+- Smoke test (seed=7, rho=0.9, alpha=2, ligation k_join=10):
+  f_dimer=0.3 -> L4=0.10, L5=0.09, L6=0.18 — **first nonzero L>=4
+  mass in any experiment**. Feed alone caps at L=3; ligation alone
+  sits dead; the combination ignites the full length spectrum.
+- Campaigns launched: `ligation_nuc_l6` (48, no feed) and
+  `dimerfeed_l6` (48, f_dimer x ligation x rho).

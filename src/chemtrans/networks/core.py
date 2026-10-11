@@ -131,12 +131,20 @@ class ReactionNetwork:
         cat_power=1,
         cat_len_power=0.0,
         k_inhibit=0.0,
+        inlet_species=None,
         params=None,
         sparse=None,
     ):
         self.species = tuple(str(s) for s in species)
         self.channels = tuple(channels)
         self.food = frozenset(int(i) for i in food)
+        # extra species the CSTR inlet may supply beyond food — e.g.
+        # environmental short oligomers fed from a bulk background
+        # chemistry (f_dimer in the generator). They remain
+        # non-food for order-parameter purposes (polymer_mask,
+        # is_food unchanged); this only relaxes the inlet check.
+        self.inlet_species = frozenset(
+            int(i) for i in (inlet_species or ()))
         self.structure = dict(structure or {})
         self.kappa = float(kappa)
         self.eps = float(eps)
@@ -174,8 +182,11 @@ class ReactionNetwork:
         if (self.food_inlet < 0).any():
             raise ValueError("food_inlet must be nonnegative")
         nonzero_inlet = set(np.nonzero(self.food_inlet)[0].tolist())
-        if not nonzero_inlet <= self.food:
-            raise ValueError("food_inlet may only supply food species")
+        allowed_inlet = self.food | self.inlet_species
+        if not nonzero_inlet <= allowed_inlet:
+            raise ValueError(
+                "food_inlet may only supply food or declared "
+                "inlet_species")
         self._cache = {}
         # per-species catalytic potency weight (L/2)^cat_len_power for
         # structural polymers (len>=2), 1.0 for everything else — food,
@@ -692,6 +703,7 @@ class ReactionNetwork:
             "cat_power": self.cat_power,
             "cat_len_power": self.cat_len_power,
             "k_inhibit": self.k_inhibit,
+            "inlet_species": sorted(self.inlet_species),
             "params": self.params,
             "channels": [
                 {
@@ -743,6 +755,7 @@ class ReactionNetwork:
             cat_power=d.get("cat_power", 1),
             cat_len_power=d.get("cat_len_power", 0.0),
             k_inhibit=d.get("k_inhibit", 0.0),
+            inlet_species=d.get("inlet_species"),
             params=d.get("params"),
         )
 
@@ -764,6 +777,7 @@ class ReactionNetwork:
             cat_power=self.cat_power,
             cat_len_power=self.cat_len_power,
             k_inhibit=self.k_inhibit,
+            inlet_species=self.inlet_species,
             params=self.params,
         )
         kw.update(overrides)

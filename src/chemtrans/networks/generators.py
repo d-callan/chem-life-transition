@@ -95,6 +95,7 @@ def polymer_network(
     cat_power: int = 1,
     cat_len_power: float = 0.0,
     k_inhibit: float = 0.0,
+    f_dimer: float = 0.0,
     g_bond: float = 1.0,
     k_lig: float = 1.0,
     k_hyd: float = 0.1,
@@ -164,10 +165,25 @@ def polymer_network(
 
     food = {index[a] for a in alphabet} | {index[a + "*"] for a in alphabet}
     food.add(index["W"])
+    if not np.isfinite(f_dimer) or not 0.0 <= f_dimer < 1.0:
+        raise ValueError("f_dimer must be in [0, 1)")
+
     food_inlet = np.zeros(n)
     for a in alphabet:
-        food_inlet[index[a + "*"]] = chi * f_inlet / alphabet_size
-        food_inlet[index[a]] = (1.0 - chi) * f_inlet / alphabet_size
+        food_inlet[index[a + "*"]] = (1.0 - f_dimer) * chi * f_inlet / alphabet_size
+        food_inlet[index[a]] = (1.0 - f_dimer) * (1.0 - chi) * f_inlet / alphabet_size
+    # environmental oligomer feed: fraction f_dimer of inlet letter
+    # flux arrives as pre-formed dimers (bulk abiotic background
+    # chemistry supplying the compartment). Uniform over all len-2
+    # strings; each dimer carries 2 letters. Dimers stay non-food for
+    # order-parameter purposes but are declared inlet_species so the
+    # CSTR boundary may supply them. f_dimer=0 is exact legacy.
+    inlet_species: frozenset[int] = frozenset()
+    if f_dimer > 0.0:
+        dimer_idx = [index[s] for s in strings if len(s) == 2]
+        for i in dimer_idx:
+            food_inlet[i] += f_dimer * f_inlet / (2.0 * len(dimer_idx))
+        inlet_species = frozenset(dimer_idx)
 
     # deterministic per-channel latent scores: seed -> one rng; arrays drawn
     # in a fixed order so p_cat/p_selfrep/p_info sweeps nest. Multiplicity
@@ -362,6 +378,7 @@ def polymer_network(
         cat_power=cat_power,
         cat_len_power=cat_len_power,
         k_inhibit=k_inhibit,
+        inlet_species=inlet_species,
         sparse=sparse,
         params=dict(
             generator=GENERATOR_VERSION,
@@ -373,6 +390,7 @@ def polymer_network(
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
             kappa=kappa, cat_power=cat_power,
             cat_len_power=cat_len_power, k_inhibit=k_inhibit,
+            f_dimer=f_dimer,
             g_bond=g_bond,
             k_lig=k_lig, k_hyd=k_hyd, k_deact=k_deact,
             seed=seed,

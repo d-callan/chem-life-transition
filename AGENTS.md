@@ -49,9 +49,21 @@ exact falling-factorial SSA.
    each channel's catalytic boost by `1 + K*sum_{c in C_r} x_c` —
    symmetric across directions (detailed balance preserved), carried
    into SSA hazards via `Process.func_inhibit` in both hazard modes.
+2d. **Environmental oligomer feed.** `generator.f_dimer` (fraction of
+   inlet letter flux in [0,1)) delivers pre-formed dimers in the CSTR
+   feed — abiotic background chemistry outside the compartment. Fed
+   dimers stay non-food (order parameters count them as polymer mass)
+   but are declared via `net.inlet_species`, which relaxes the
+   food-only inlet check; SSA feed processes and IC seeding must use
+   `net.food | net.inlet_species`. Total inlet letter flux is
+   conserved (monomer feed scaled by 1-f_dimer). f_dimer>0 means
+   x=0 is no longer absorbing (dimers flow in like food) — that is
+   the intended physical semantics.
 3. **Absorbing limit.** `eps=0` + non-food catalysts => zero polymer
    synthesis is reachable with no catalysts: dead state absorbing for
    synthesis channels (decay channels still run; they're `synth=False`).
+   Exception: `f_dimer>0` supplies dimers at the boundary, so the
+   all-zero state is not a fixed point (by design).
 4. **Structured statuses.** Dynamics return STATIONARY / OSCILLATORY /
    RUNAWAY / UNRESOLVED; only certified equilibria carry `x_eq`.
    Never use `max(x,0)` inside the vector field to hide negativity.

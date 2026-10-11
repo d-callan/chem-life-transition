@@ -149,7 +149,7 @@ def build_processes(net: ReactionNetwork, dilution: float,
                         kind="channel", channel=r,
                         func_boost=boost, func_inhibit=finh))
     if dilution > 0:
-        for i in sorted(net.food):
+        for i in sorted(net.food | net.inlet_species):
             if net.food_inlet[i] > 0:
                 procs.append(Process(
                     rate=dilution * net.food_inlet[i], participants=(),
@@ -250,7 +250,7 @@ def simulate(
 
     if n0 is None:
         n = np.zeros(n_species, dtype=np.int64)
-        for i in net.food:
+        for i in net.food | net.inlet_species:
             n[i] = int(round(net.food_inlet[i] * volume))
     else:
         n = np.asarray(n0, dtype=np.int64).copy()
