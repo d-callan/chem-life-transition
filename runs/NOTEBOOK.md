@@ -423,8 +423,8 @@ Per `docs/IMPLEMENTATION_PLAN_TEMPLATED_LIGATION.md` §7 (as-built):
   letter conservation, and fwd/rev symmetry verified.
 - Campaign `template_lig_l6` (80 cells): templated x dg_pair
   {0,0.5,1,2,3} x 8 seeds, fixed productive regime (f_dimer=0.4,
-  rho=0.9, k_join=10, kappa=500). Output data/pilots/r6/
-  template_lig_l6-f51ef87f5506.
+  rho=0.9, k_join=10, kappa=500). Output data/pilots/r7/
+  template_lig_l6-f51ef87f5506 (canonical).
 
 **r6 -> r7 remediation**: sparsity.py first pass leaked ODE solver
 negative excursions into the entropy sum — near-empty length shells
@@ -433,3 +433,48 @@ negatives clipped + reported as neg_mass_abs; pools below MASS_FLOOR
 or with neg_mass > 0.5*pool_mass report sparsity=null. The r6
 template_lig_l6-f51ef87f5506 shard (50 records) is a pre-fix artifact;
 canonical data is the r7 run.
+
+---
+
+## template_lig_l6 RESULTS (80 cells, all STATIONARY, r7)
+
+Aggregates over 8 seeds (mean±sd). Blind cells identical across dg —
+deterministic replicates confirming dg acts only via template edges.
+
+| cell                  | m_poly   | L4 spar | L6 spar | N_eff(L6) | n_att |
+|-----------------------|----------|---------|---------|-----------|-------|
+| blind ligation        | 2.68±.38 | .58±.19 | .85±.12 | 2.0±1.0   | 3.2   |
+| templated, dg=0       | 2.51±.35 | 1.00*   | null    | 1.0       | 2.1   |
+| templated, dg=0.5     | 3.37±.66 | .06±.06 | .12±.09 | 41±13     | 3.6   |
+| templated, dg>=1      | ~3.25    | ~.06    | ~.05    | ~52       | 2.0   |
+
+(*L4 pools at dg=0 are near-empty; sparsity=1.0 is single-sequence
+trivial dominance, L5/L6 pools absent -> honest nulls.)
+
+FINDING 1 — emergent templating CONFIRMED but threshold-binary.
+At dg=0.5 template edges ignite: m_poly 2.68 -> 3.37 (+26% vs blind).
+But 0.5->3.0 changes nothing (3.37->3.24): once edges exist, w_max
+cap + saturated kappa make extra affinity inert. No graded
+"recognition transition" — on/off at the w_min boundary.
+
+FINDING 2 — pruning hypothesis INVERTED. Templated ligation FLATTENS
+sequence space: N_eff(L6) ~52/64 vs blind ~2; L6 sparsity .85->.05.
+Physical reading: complementarity is a SYMMETRY, not a selector —
+every sequence has a complement, full-length coverage gives ~L+1
+template edges per product, so all sequences get boosted ~equally.
+The blind network's apparent "selection" (2 dominant L6 sequences)
+was topological lottery luck: p_cat_lig=0.5 starves most channels,
+the lucky few concentrate mass. Neither is heredity.
+
+FINDING 3 — weak homopolymer enrichment. Top L6 sequences in every
+templated cell are AAAAAA/BBBBBB-class (the maximal-affinity
+reciprocal partners, w=100 both ways) — but only ~3-6% mass each and
+NO complementary pairs co-enriched in top-5. A-vs-B dominance splits
+by seed (network-specific symmetry breaking), not by chemistry.
+
+Interpretation: base-pairing affinity alone cannot drive sequence
+pruning — it equalizes. Real negative selection needs asymmetry the
+model lacks: a folding/competence filter (only some sequences CAN
+template), mismatch-dependent abort rates, or strand displacement
+competition. The error-threshold story needs a fidelity-cost knob
+(delta_g_mismatch sweep) or sequence-length-dependent recognition.
