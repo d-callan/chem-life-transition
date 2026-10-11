@@ -501,3 +501,47 @@ as-built divergences):
   {0,1,2,3.5,5} x 8 seeds, 40 cells) and `purify_l5` (K3 L5,
   templated x delta_g_mismatch {1,2,3} x 4 seeds, 24 cells;
   f_dimer=0.3 feeds a dirty C-contaminated soup).
+
+---
+
+## Protocell population dynamics — IMPLEMENTED
+
+Per `docs/IMPLEMENTATION_PLAN_PROTOCELL_SELECTION.md` (§7 records
+as-built deviations):
+
+- `dynamics/protocell_pop.py`: population of semi-permeable vesicles
+  sharing a nutrient bath. Length-selective permeation (monomers fast,
+  dimers slow, L>=3 strongly retained with basal leak p_polymer),
+  osmotic lipid-stealing dv = mu*v*(Pi_j - Pi_bar) - d_leak*v,
+  growth-dilution of internal state, lysis at v<=0.4*v0, division at
+  v>=2*v0 with binomial molecule partitioning, n_max carrying capacity
+  flushes lowest-pressure cells. Integration: per-cell LSODA chunks
+  with frozen mean-field coupling.
+- Wired as reactor.type="protocell_population" in measure_run;
+  observables: speciation_index (cosine dist over retained pool),
+  per-cell sparsity/N_eff, signature_cells (MA>=a_cut AND mass>=floor).
+- purify_l5 campaign TERMINATED (K3/L5 cells >70min each, no shard
+  records). Replaced by scout battery (single integrations, ~2s/cell).
+
+### Scout findings before campaign (screening evidence, not results)
+
+1. kappa 50 vs 500: identical flat distributions — NOT saturation.
+2. Uncapped w_max, perfect-only w_min: flat — cap flattening isn't it.
+3. 8 asymmetric ICs: all land on the same attractor.
+4. K3/L4 purity probe: templated ligation is LESS pure (0.46) than
+   blind topological lottery (0.88) — C-purification hypothesis fails
+   in bulk too. Blind ligation's sparse winners are luck, not heredity.
+5. N=10 encapsulation scout: every independently-seeded vesicle
+   converges to the same flat attractor (spar 0.042, neff 53.7).
+   Passive trapping is not a bottleneck — open CSTR interior
+   regenerates the commons.
+6. First live protocell run (mu=2): 20 divisions, 10 lyses, real
+   compartment-level Darwinian dynamics — but speciation ~2e-7.
+   Osmotic reward is sequence-BLIND (senses total retained mass);
+   internal chemistry homogenizes every cell to the same lineage.
+
+Hypothesis under test in `protocell_selection_l6`: does smaller omega
+(stronger partition noise at division) or stronger mu produce
+sequence-level speciation / MA>=5 signature cells? If not, selection
+of sequences requires identity-coupled growth (e.g. growth reward
+tied to specific functional sequences, not bulk polymer mass).
