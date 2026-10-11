@@ -1,0 +1,44 @@
+{
+  "name": "neg_feedback_l6",
+  "experiment": "negative_constraints_dialysis_threshold_inhibition_L6",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "max_len": 6,
+      "alphabet_size": 2,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 500.0,
+      "cat_power": 2,
+      "min_cat_len": 2,
+      "k_inhibit": 0.0
+    },
+    "eps": 0.0,
+    "reactor": {
+      "type": "cstr",
+      "dilution": 0.5,
+      "t_max": 600.0,
+      "x0_policy": "dense",
+      "polymer_retention": 0.8,
+      "retention_len_scale": 0.0,
+      "multistability": {"n_ic": 8, "min_mass": 0.01}
+    }
+  },
+  "sweeps": [
+    {"param": "reactor.polymer_retention",
+     "values": [0.8, 0.95]},
+    {"param": "reactor.retention_len_scale",
+     "values": [0.0, 0.5, 1.0]},
+    {"param": "generator.min_cat_len",
+     "values": [2, 3]},
+    {"param": "generator.k_inhibit",
+     "values": [0.0, 0.5]}
+  ],
+  "seed_keys": ["e1land|net3", "e1land|net7", "catret|net0", "catret|net1"],
+  "order_parameter": "equilibrium.m_poly",
+  "out_dir": "data/pilots"
+}

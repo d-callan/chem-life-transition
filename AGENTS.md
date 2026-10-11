@@ -34,13 +34,21 @@ exact falling-factorial SSA.
    `w_C = (len(C)/2)^cat_len_power` is the length-scaled potency
    weight (`cat_len_power=0` is the legacy flat-kappa law) and must
    stay symmetric across directions so `k_f/k_r` is unaffected.
-2b. **Compartment retention.** `reactor.polymer_retention` (rho in
-   [0,1)) makes structural polymers (len>=2) wash out at `D*(1-rho)`
-   while food/fuel/waste dilute at `D` — a semi-permeable
-   compartment, not a change to internal stoichiometry. It must be
+2b. **Compartment retention & dialysis.** `reactor.polymer_retention`
+   (rho in [0,1)) makes structural polymers (len>=2) wash out at
+   `D*(1-rho)` while food/fuel/waste dilute at `D` — a semi-permeable
+   compartment, not a change to internal stoichiometry.
+   `reactor.retention_len_scale` (gamma in [0,1]) adds size-selective
+   dialysis: `rho_i = rho*(1 - 2*gamma/L)` so gamma=1 lets dimers
+   wash out at full `D` while long chains are trapped. Both must be
    threaded identically through `rhs_cstr`, `net.jacobian`,
    `spectral.jacobian_eigs`, and `gillespie.build_processes`/`simulate`
-   (dilution-process rates); rho=0 is the homogeneous CSTR.
+   (dilution-process rates) — `net.dilution_outflow` is the single
+   source of truth for the outflow vector.
+2c. **Product inhibition.** `generator.k_inhibit` (K >= 0) divides
+   each channel's catalytic boost by `1 + K*sum_{c in C_r} x_c` —
+   symmetric across directions (detailed balance preserved), carried
+   into SSA hazards via `Process.func_inhibit` in both hazard modes.
 3. **Absorbing limit.** `eps=0` + non-food catalysts => zero polymer
    synthesis is reachable with no catalysts: dead state absorbing for
    synthesis channels (decay channels still run; they're `synth=False`).

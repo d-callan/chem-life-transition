@@ -89,11 +89,20 @@ def measure_run(task: dict) -> dict:
     polymer_retention = float(reactor.get("polymer_retention", 0.0))
     if not (0.0 <= polymer_retention < 1.0):
         raise ValueError("reactor.polymer_retention must be in [0, 1)")
+    # size-selective dialysis: gamma in [0,1] mixes flat retention
+    # (0, legacy) into length-graded rho_i = rho*(1 - 2*gamma/L) —
+    # gamma=1 lets dimers wash out at full D while long chains are
+    # trapped (membrane/pore/coacervate size cutoff).
+    retention_len_scale = float(
+        reactor.get("retention_len_scale", 0.0))
+    if not (0.0 <= retention_len_scale <= 1.0):
+        raise ValueError("reactor.retention_len_scale must be in [0, 1]")
 
     rec = {
         "generator": gen_spec,
         "reactor": {**reactor, "type": rtype,
-                    "polymer_retention": polymer_retention},
+                    "polymer_retention": polymer_retention,
+                    "retention_len_scale": retention_len_scale},
         "eps": eps,
         "seed_key": seed_key,
         "net_hash": net.hash,
@@ -172,7 +181,8 @@ def measure_run(task: dict) -> dict:
             net, t_max=float(reactor.get("t_max", 200.0)),
             dilution=dilution, eps=eps, x0=x0_det,
             n_points=int(reactor.get("n_points", 400)),
-            polymer_retention=polymer_retention)
+            polymer_retention=polymer_retention,
+            retention_len_scale=retention_len_scale)
         rec["det"] = {
             "type": rtype,
             "status": det.trajectory_type,
@@ -202,7 +212,8 @@ def measure_run(task: dict) -> dict:
             x = det.x_eq
             obs = closure.phi_decomposition(net, x, eps)
             eigs, spec_conv = spectral.jacobian_eigs(
-                net, x, dilution, eps, retention=polymer_retention)
+                net, x, dilution, eps, retention=polymer_retention,
+                len_scale=retention_len_scale)
             rec["equilibrium"] = {
                 "mass_raf": obs["mass_raf"],
                 "phi_gross": obs["phi_gross"],
@@ -243,7 +254,8 @@ def measure_run(task: dict) -> dict:
                             net_ab,
                             t_max=float(reactor.get("t_max", 200.0)),
                             dilution=dilution, eps=eps,
-                            polymer_retention=polymer_retention)
+                            polymer_retention=polymer_retention,
+                            retention_len_scale=retention_len_scale)
                         spectrum = (
                             assembly.length_mass_spectrum(
                                 net_ab, det_ab.x_eq)
@@ -382,6 +394,8 @@ def measure_run(task: dict) -> dict:
                                        "t_max", reactor.get(
                                            "t_max", 200.0))),
                                    polymer_retention=polymer_retention,
+                                   retention_len_scale=
+                                   retention_len_scale,
                                    sensitivity=(task.get(
                                        "sensitivity") or {}).get(
                                            "multistability"))
@@ -408,13 +422,15 @@ def measure_run(task: dict) -> dict:
                 min_mass=float(cspec.get("min_mass", 0.01)),
                 t_max=float(cspec.get("t_max", 200.0)),
                 polymer_retention=polymer_retention,
+                retention_len_scale=retention_len_scale,
                 sensitivity=(task.get("sensitivity") or {}).get(
                     "multistability"))
             _add_per_attractor_obs(net, ms_block, task)
             rec["multistability"] = ms_block
         rec["competition"] = _competition_block(
             net, dilution, eps, seed_key, ms_block, cspec,
-            polymer_retention=polymer_retention)
+            polymer_retention=polymer_retention,
+            retention_len_scale=retention_len_scale)
     else:
         rec["competition"] = None
 
@@ -452,7 +468,8 @@ def measure_run(task: dict) -> dict:
             core_mask[i] = True
         procs_obs = gillespie.build_processes(
             net, dilution, eps, hazard_mode=hazard_mode,
-            polymer_retention=polymer_retention)
+            polymer_retention=polymer_retention,
+            retention_len_scale=retention_len_scale)
         d_core = np.array([sum(comp_mass[i] * dc for i, dc in p.delta
                                if core_mask[i]) for p in procs_obs])
         d_nf = np.array([sum(comp_mass[i] * dc for i, dc in p.delta
@@ -516,6 +533,7 @@ def measure_run(task: dict) -> dict:
                 record_dt=float(stoch.get("record_dt", t_max / 1000)),
                 hazard_mode=hazard_mode,
                 polymer_retention=polymer_retention,
+                retention_len_scale=retention_len_scale,
                 observers=tuple(obs for _, obs in cell_states))
             o = mass_raf_series(net, res.n, volume)
             st0 = cell_states[cells.index((theta, mass_floor))][0]
@@ -666,7 +684,9 @@ def _continuation_block(net: ReactionNetwork, reactor: dict,
         for lam in seq:
             kw = {"dilution": dilution, "eps": eps,
                   "polymer_retention":
-                      float(reactor.get("polymer_retention", 0.0))}
+                      float(reactor.get("polymer_retention", 0.0)),
+                  "retention_len_scale":
+                      float(reactor.get("retention_len_scale", 0.0))}
             kw[param] = lam
             r = ode.integrate_cstr(net, t_max=t_max, x0=x, **kw)
             x = r.x_eq if r.converged else r.x[-1]
@@ -817,6 +837,7 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
                           n_ic: int, min_mass: float,
                           t_max: float,
                           polymer_retention: float = 0.0,
+                          retention_len_scale: float = 0.0,
                           sensitivity: dict | None = None) -> dict:
     """Certified multi-IC scan -> attractor clustering + member x_eqs.
 
@@ -828,7 +849,8 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
     for k, x0 in enumerate(ics):
         r = ode.integrate_cstr(net, x0=x0, dilution=dilution, eps=eps,
                                t_max=t_max,
-                               polymer_retention=polymer_retention)
+                               polymer_retention=polymer_retention,
+                               retention_len_scale=retention_len_scale)
         status.append(r.trajectory_type)
         if r.converged:
             eqs.append(r.x_eq)
@@ -841,7 +863,8 @@ def _multistability_block(net: ReactionNetwork, dilution: float,
         if _nonfood_mass(net, x) < min_mass:
             continue
         eigs, spec_conv = spectral.jacobian_eigs(
-            net, x, dilution, eps, retention=polymer_retention)
+            net, x, dilution, eps, retention=polymer_retention,
+            len_scale=retention_len_scale)
         # a partially-converged spectrum may be missing the leading
         # unstable eigenvalue — do not certify stability on it
         if spec_conv and eigs[0].real < 0:
@@ -942,7 +965,8 @@ def _wilson_ci(k: int, n: int, z: float = 1.96) -> list[float] | None:
 def _competition_block(net: ReactionNetwork, dilution: float,
                        eps: float, seed_key: str,
                        ms_block: dict | None, cspec: dict,
-                       polymer_retention: float = 0.0) -> dict:
+                       polymer_retention: float = 0.0,
+                       retention_len_scale: float = 0.0) -> dict:
     """Mixture-competition SSA between the first two organized
     attractors. Two initializations per plan:
 
@@ -1015,7 +1039,8 @@ def _competition_block(net: ReactionNetwork, dilution: float,
                 max_events=int(cspec.get("max_events", 4_000_000)),
                 record_dt=t_max / 500,
                 hazard_mode=hazard_mode,
-                polymer_retention=polymer_retention)
+                polymer_retention=polymer_retention,
+                retention_len_scale=retention_len_scale)
             xf = res.final_counts / volume
             if _nonfood_mass(net, xf) < min_mass:
                 label = "dead"

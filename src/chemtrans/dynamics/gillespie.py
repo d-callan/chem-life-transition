@@ -54,6 +54,11 @@ class Process:
     # default literal p-molecule falling-factorial mechanism. None for
     # "participants" mode and all non-catalyzed processes.
     func_boost: tuple[int, int] | None = None
+    # product inhibition / site saturation (net.k_inhibit > 0): h is
+    # divided by (1 + K * sum_{c in channel catalysts} n_c / V) — the
+    # SSA analogue of the ODE's shared per-channel denominator.
+    # (catalyst_indices, K); None when uninhibited.
+    func_inhibit: tuple[tuple[int, ...], float] | None = None
 
 
 def _mk_offsets(parts: list[int]) -> tuple[int, ...]:
@@ -68,7 +73,8 @@ def _mk_offsets(parts: list[int]) -> tuple[int, ...]:
 def build_processes(net: ReactionNetwork, dilution: float,
                     eps: float | None = None,
                     hazard_mode: str = "participants",
-                    polymer_retention: float = 0.0) -> list[Process]:
+                    polymer_retention: float = 0.0,
+                    retention_len_scale: float = 0.0) -> list[Process]:
     """Expand channels + boundary processes for the SSA.
 
     hazard_mode selects the cooperative-catalysis convention:
@@ -95,6 +101,8 @@ def build_processes(net: ReactionNetwork, dilution: float,
             f"got {hazard_mode!r}")
     if not (0.0 <= polymer_retention < 1.0):
         raise ValueError("polymer_retention must be in [0, 1)")
+    if not (0.0 <= retention_len_scale <= 1.0):
+        raise ValueError("retention_len_scale must be in [0, 1]")
     if eps is None:
         eps = net.eps
     procs: list[Process] = []
@@ -124,6 +132,11 @@ def build_processes(net: ReactionNetwork, dilution: float,
             # identical multiplier on both directions, matching the
             # ODE's symmetric catalysis (detailed balance untouched)
             kcat = net.kappa * float(net.cat_weights[c])
+            # shared per-channel inhibition denominator (product
+            # inhibition / site saturation) — same divisor in both
+            # hazard modes, matching the ODE boost/(1+K*sum x_c)
+            finh = ((ch.catalysts, net.k_inhibit)
+                    if net.k_inhibit > 0 else None)
             for direction, parts, delta, k in (
                     ("fwd", ch.factors("fwd") + cat_parts, fwd_delta,
                      ch.k_f * kcat),
@@ -134,15 +147,15 @@ def build_processes(net: ReactionNetwork, dilution: float,
                         rate=k, participants=parts,
                         offsets=_mk_offsets(list(parts)), delta=delta,
                         kind="channel", channel=r,
-                        func_boost=boost))
+                        func_boost=boost, func_inhibit=finh))
     if dilution > 0:
         for i in sorted(net.food):
             if net.food_inlet[i] > 0:
                 procs.append(Process(
                     rate=dilution * net.food_inlet[i], participants=(),
                     offsets=(), delta=((i, 1),), kind="feed", channel=-1))
-        out_rates = dilution * (
-            1.0 - polymer_retention * net.polymer_mask)
+        out_rates = net.dilution_outflow(
+            dilution, polymer_retention, retention_len_scale)
         for i in range(net.n_species):
             procs.append(Process(
                 rate=float(out_rates[i]), participants=(i,),
@@ -174,6 +187,10 @@ def hazard(p: Process, n: np.ndarray, volume: float) -> float:
         if n[c] <= 0:
             return 0.0
         h *= (n[c] / volume) ** pw
+    if p.func_inhibit is not None:
+        cats, k_inh = p.func_inhibit
+        h /= 1.0 + k_inh * float(
+            n[np.asarray(cats, dtype=int)].sum()) / volume
     return h
 
 
@@ -219,6 +236,7 @@ def simulate(
     observers: tuple = (),
     hazard_mode: str = "participants",
     polymer_retention: float = 0.0,
+    retention_len_scale: float = 0.0,
 ) -> SSAResult:
     """Run the exact SSA. See module docstring for conventions and
     `build_processes` for the hazard_mode catalysis convention."""
@@ -226,7 +244,8 @@ def simulate(
     if eps is None:
         eps = net.eps
     procs = build_processes(net, dilution, eps, hazard_mode=hazard_mode,
-                            polymer_retention=polymer_retention)
+                            polymer_retention=polymer_retention,
+                            retention_len_scale=retention_len_scale)
     n_species = net.n_species
 
     if n0 is None:

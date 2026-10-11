@@ -94,6 +94,7 @@ def polymer_network(
     kappa: float = 1.0,
     cat_power: int = 1,
     cat_len_power: float = 0.0,
+    k_inhibit: float = 0.0,
     g_bond: float = 1.0,
     k_lig: float = 1.0,
     k_hyd: float = 0.1,
@@ -118,6 +119,13 @@ def polymer_network(
     disproportionately better catalysts so short homopolymers cannot
     carry the whole RAF. Symmetric across directions; detailed
     balance is unaffected.
+
+    k_inhibit adds product inhibition / active-site saturation:
+    each channel's catalytic boost is divided by
+    (1 + k_inhibit * sum_{c in C_r} x_c) so a catalyst pool cannot
+    boost without bound as it accumulates — a negative feedback on
+    runaway single-species dominance. Symmetric across directions;
+    k_inhibit=0 is the legacy uninhibited law.
     """
     if alphabet_size < 1 or max_len < 2:
         raise ValueError("need alphabet_size>=1 and max_len>=2")
@@ -353,6 +361,7 @@ def polymer_network(
         eps=eps,
         cat_power=cat_power,
         cat_len_power=cat_len_power,
+        k_inhibit=k_inhibit,
         sparse=sparse,
         params=dict(
             generator=GENERATOR_VERSION,
@@ -363,7 +372,8 @@ def polymer_network(
             ligation=ligation, p_cat_lig=p_cat_lig, k_join=k_join,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
             kappa=kappa, cat_power=cat_power,
-            cat_len_power=cat_len_power, g_bond=g_bond,
+            cat_len_power=cat_len_power, k_inhibit=k_inhibit,
+            g_bond=g_bond,
             k_lig=k_lig, k_hyd=k_hyd, k_deact=k_deact,
             seed=seed,
         ),

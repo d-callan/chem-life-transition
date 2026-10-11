@@ -331,3 +331,35 @@ Assembly remains null — now for a sharper reason: retention amplifies
 mass but not length, and potency weights cannot create the long
 catalysts they would reward. Next candidate levers: length-graded
 retention, min_cat_len threshold, or sequence-specific catalysis.
+
+---
+
+## Negative-feedback knobs (dialysis, min_cat_len, k_inhibit)
+
+Per `docs/IMPLEMENTATION_PLAN_NEGATIVE_FEEDBACK.md` (IMPLEMENTED):
+
+- `reactor.retention_len_scale` (gamma in [0,1]): size-selective
+  dialysis — rho_i = rho*(1 - 2*gamma/L); gamma=1 lets dimers wash
+  out at full D while L6 retains 2rho/3. (Formula corrected from the
+  draft's (2/L)^gamma, which zeroed retention at gamma=0.)
+- `generator.min_cat_len` >= 3: hard catalyst-length floor (existing
+  generator param, newly swept).
+- `generator.k_inhibit` >= 0: product inhibition — channel boost
+  divided by (1 + K*sum_c x_c), symmetric across directions.
+
+Pilot `neg_feedback_l6` (96 records, `data/pilots/r6/neg_feedback_l6-*`):
+rho {0.8,0.95} x gamma {0,0.5,1} x min_cat_len {2,3} x K {0,0.5}.
+
+**L>=4 mass = 0.000 in all 96 cells.** And every constraint weakened
+the organized phase rather than redirecting it:
+- min_cat_len=3 -> dead everywhere (ignition bootstrap fails: making
+  a len-3 catalyst requires a len>=3 catalyst).
+- Dialysis -> m_poly collapses monotonically (4.87 -> 0.33 on net7);
+  dimers are both the trap and the fuel.
+- k_inhibit=0.5 -> ~0.5% suppression, nearly inert at saturated kappa.
+
+Assembly remains null for a deeper reason: constraint *strength*
+cannot substitute for pathway *structure*. Long chains need a direct
+kinetic route (fragment ligation — `ligation=True` is already in the
+generator) or an essential functional role (energetic stabilization,
+exclusive catalytic niche), not just disadvantages on short chains.

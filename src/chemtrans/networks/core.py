@@ -130,6 +130,7 @@ class ReactionNetwork:
         eps=1.0,
         cat_power=1,
         cat_len_power=0.0,
+        k_inhibit=0.0,
         params=None,
         sparse=None,
     ):
@@ -145,6 +146,9 @@ class ReactionNetwork:
         if not np.isfinite(cat_len_power) or cat_len_power < 0:
             raise ValueError("cat_len_power must be a nonnegative float")
         self.cat_len_power = float(cat_len_power)
+        if not np.isfinite(k_inhibit) or k_inhibit < 0:
+            raise ValueError("k_inhibit must be a nonnegative float")
+        self.k_inhibit = float(k_inhibit)
         self.params = dict(params or {})
         # sparse mode: never materialize dense S/C/J. None -> auto for
         # large networks (dense S would be n_species x n_channels).
@@ -262,6 +266,27 @@ class ReactionNetwork:
             self._cache["polymer_mask"] = self.polymer_lengths >= 2
         return self._cache["polymer_mask"]
 
+    def dilution_outflow(self, dilution: float, retention: float = 0.0,
+                         len_scale: float = 0.0) -> np.ndarray:
+        """Per-species CSTR outflow rate vector D_i.
+
+        retention (rho): flat polymer-retention fraction.
+        len_scale (gamma in [0,1]): size-selective dialysis mixing —
+          rho_i(L) = rho * (1 - 2*gamma/L) for structural polymers.
+          gamma=0 -> rho_i = rho for all polymers (legacy flat).
+          gamma=1 -> rho_i = rho*(1 - 2/L): dimers wash out at full
+          D, longer chains retained progressively (L6 -> 2rho/3).
+        Food/fuel/waste and unstructured species always outflow at D.
+        """
+        if retention:
+            if not (0.0 <= len_scale <= 1.0):
+                raise ValueError("retention_len_scale must be in [0, 1]")
+            lens = np.clip(self.polymer_lengths, 2, None)
+            rho_i = (retention * (1.0 - len_scale * 2.0 / lens)
+                     * self.polymer_mask)
+            return dilution * (1.0 - rho_i)
+        return np.full(self.n_species, dilution)
+
     # ---------------- derived arrays (cached) -------------------------
     def stoichiometry(self) -> np.ndarray:
         """S[i, r] = net production of species i by channel r (forward)."""
@@ -364,6 +389,13 @@ class ReactionNetwork:
         cat = self.kappa * np.asarray(
             C @ (self.cat_weights
                  * np.power(x, self.cat_power))).ravel()
+        if self.k_inhibit:
+            # product inhibition / active-site saturation: the
+            # channel's own catalyst pool suppresses marginal boost —
+            # identical divisor on both directions, so k_f/k_r and
+            # detailed balance are preserved
+            cat = cat / (1.0 + self.k_inhibit
+                         * np.asarray(C @ x).ravel())
         boost_f = np.where(gate_f, eps, 1.0) + cat
         boost_r = np.where(gate_r, eps, 1.0) + cat
         mf = np.prod(x_app[Rf], axis=1)
@@ -403,6 +435,11 @@ class ReactionNetwork:
         Cx = np.asarray(
             C @ (self.cat_weights
                  * np.power(x, self.cat_power))).ravel()
+        # inhibition denominator per channel: 1 + K * sum_{c in C_r} x_c
+        if self.k_inhibit:
+            denom = 1.0 + self.k_inhibit * np.asarray(C @ x).ravel()
+        else:
+            denom = np.ones(self.n_channels)
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
 
@@ -411,6 +448,8 @@ class ReactionNetwork:
         for r, ch in enumerate(self.channels):
             fac_f = ch.factors("fwd")
             fac_r = ch.factors("rev")
+            cat_term = (self.kappa * Cx[r] / denom[r]
+                        if self.k_inhibit else self.kappa * Cx[r])
             # d(monomial)/dx_i: sum over positions holding species i of the
             # product over the other positions.
             for pos, s in enumerate(fac_f):
@@ -418,22 +457,27 @@ class ReactionNetwork:
                     [x_app[fac_f[q]] for q in range(len(fac_f)) if q != pos],
                     axis=0,
                 ) if len(fac_f) > 1 else 1.0
-                Df[r, s] += kf[r] * (bg_f[r] + self.kappa * Cx[r]) * others
+                Df[r, s] += kf[r] * (bg_f[r] + cat_term) * others
             for pos, s in enumerate(fac_r):
                 others = np.prod(
                     [x_app[fac_r[q]] for q in range(len(fac_r)) if q != pos],
                     axis=0,
                 ) if len(fac_r) > 1 else 1.0
-                Db[r, s] += kr[r] * (bg_r[r] + self.kappa * Cx[r]) * others
+                Db[r, s] += kr[r] * (bg_r[r] + cat_term) * others
             # catalysts contribute via boost: d(k*mass*kappa*x_c^p)/dx_c
             cat_idx = np.nonzero(C[r])[0]
             if len(cat_idx):
-                # derivative of kappa * w_c * x_c^p is w_c * p *
-                # x_c^(p-1) — raw power, matching the unclipped rate
-                # law in rates(); integer cat_power keeps this finite
-                # at any real x
+                # derivative of kappa * w_c * x_c^p / denom:
+                # quotient rule — kappa*(w_c*p*x_c^(p-1)*denom -
+                # Cx_r*K)/denom^2; at K=0 reduces to kappa*w_c*p*x_c^(p-1).
+                # Raw power, matching the unclipped rate law in rates();
+                # integer cat_power keeps this finite at any real x.
                 dpow = (self.cat_power * self.cat_weights[cat_idx]
                         * np.power(x[cat_idx], self.cat_power - 1))
+                if self.k_inhibit:
+                    dpow = ((dpow * denom[r]
+                             - Cx[r] * self.k_inhibit)
+                            / denom[r] ** 2)
                 Df[r, cat_idx] += kf[r] * mf[r] * self.kappa * dpow
                 Db[r, cat_idx] += kr[r] * mr[r] * self.kappa * dpow
         return Df, Db
@@ -466,6 +510,11 @@ class ReactionNetwork:
         Cx = np.asarray(
             C @ (self.cat_weights
                  * np.power(x, self.cat_power))).ravel()
+        if self.k_inhibit:
+            denom = 1.0 + self.k_inhibit * np.asarray(C @ x).ravel()
+        else:
+            denom = np.ones(self.n_channels)
+        cat_term = self.kappa * Cx / denom
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
 
@@ -486,7 +535,7 @@ class ReactionNetwork:
                         others *= xk[R[:, q]]
                 rows.append(rr[mask])
                 cols.append(s[mask])
-                data.append((kvec * (bg + self.kappa * Cx)
+                data.append((kvec * (bg + cat_term)
                              * others)[mask])
         Rc, mc = self._cat_idx_padded()
         for pos in range(mc):
@@ -498,6 +547,11 @@ class ReactionNetwork:
                     * self.cat_weights[np.where(mask, c, 0)]
                     * np.power(x[np.where(mask, c, 0)],
                                self.cat_power - 1))
+            if self.k_inhibit:
+                # quotient rule on kappa*Cx/denom (denominator is
+                # per-channel, shared across catalyst positions)
+                dpow = ((dpow * denom - Cx * self.k_inhibit)
+                        / denom ** 2)
             rows_f.append(rr[mask]); cols_f.append(c[mask])
             data_f.append((kf * mf * self.kappa * dpow)[mask])
             rows_b.append(rr[mask]); cols_b.append(c[mask])
@@ -516,20 +570,18 @@ class ReactionNetwork:
         dilution: float = 0.0,
         eps: float | None = None,
         retention: float = 0.0,
+        len_scale: float = 0.0,
     ) -> np.ndarray:
-        """J = S (Df - Db) - D*diag(1 - retention*polymer_mask).
+        """J = S (Df - Db) - diag(dilution_outflow).
 
-        retention is the CSTR polymer-retention fraction: species with
-        structure len >= 2 wash out at D*(1-retention); everything else
-        at D. retention=0 reproduces the homogeneous-dilution Jacobian.
+        retention/len_scale define the CSTR outflow vector (see
+        dilution_outflow); zeros reproduce the homogeneous-dilution
+        Jacobian.
         """
         Df, Db = self.d_rates(x, eps)
-        if retention:
-            if not (0.0 <= retention < 1.0):
-                raise ValueError("retention must be in [0, 1)")
-            outflow = dilution * (1.0 - retention * self.polymer_mask)
-        else:
-            outflow = np.full(self.n_species, dilution)
+        if retention and not (0.0 <= retention < 1.0):
+            raise ValueError("retention must be in [0, 1)")
+        outflow = self.dilution_outflow(dilution, retention, len_scale)
         if self.use_sparse:
             import scipy.sparse as sp
             return (self.stoichiometry() @ (Df - Db)
@@ -639,6 +691,7 @@ class ReactionNetwork:
             "eps": self.eps,
             "cat_power": self.cat_power,
             "cat_len_power": self.cat_len_power,
+            "k_inhibit": self.k_inhibit,
             "params": self.params,
             "channels": [
                 {
@@ -689,6 +742,7 @@ class ReactionNetwork:
             eps=d["eps"],
             cat_power=d.get("cat_power", 1),
             cat_len_power=d.get("cat_len_power", 0.0),
+            k_inhibit=d.get("k_inhibit", 0.0),
             params=d.get("params"),
         )
 
@@ -709,6 +763,7 @@ class ReactionNetwork:
             eps=self.eps,
             cat_power=self.cat_power,
             cat_len_power=self.cat_len_power,
+            k_inhibit=self.k_inhibit,
             params=self.params,
         )
         kw.update(overrides)
