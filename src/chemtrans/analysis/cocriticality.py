@@ -202,9 +202,20 @@ def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
             lcb = lc_from_fit(fit_all_models(lam_b, y_b, seed=seed))
             if lcb is not None:
                 bounds.append(lcb)
-        if bounds:
+        if len(bounds) == 2:
             detail["lc_censor_bracket"] = [
                 float(min(bounds)), float(max(bounds))]
+            detail["censor_robust"] = True
+        elif len(bounds) == 1:
+            detail["lc_censor_bracket"] = None
+            detail["censor_robust"] = False
+            detail["censor_note"] = (
+                "transition destroyed under extreme imputation")
+        else:
+            detail["lc_censor_bracket"] = None
+            detail["censor_robust"] = False
+            detail["censor_note"] = (
+                "no critical point under either extreme imputation")
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
         if sel in ("fold", "fold_rev"):
@@ -568,11 +579,11 @@ def coincidence_report(by_net: dict[str, list[dict]],
                        if e.detail.get("extrapolated") else {}),
                     **({"n_censored": e.detail["n_censored"],
                         "censor_lams": e.detail["censor_lams"],
-                        "lc_censor_bracket":
-                            e.detail["lc_censor_bracket"]}
-                       if e.detail.get("lc_censor_bracket")
-                       else {"n_censored": e.detail["n_censored"],
-                             "censor_lams": e.detail["censor_lams"]}
+                        "censor_robust": e.detail.get("censor_robust", True),
+                        **({"lc_censor_bracket": e.detail["lc_censor_bracket"]}
+                           if e.detail.get("lc_censor_bracket") else {}),
+                        **({"censor_note": e.detail["censor_note"]}
+                           if e.detail.get("censor_note") else {})}
                        if e.detail.get("n_censored") else {})}
                 for f, e in per_fam[o].items()}
             for o in observables},

@@ -271,3 +271,31 @@ combinatorial depth alone does not produce high-assembly dominants;
 the organized phase still concentrates mass in short polymers.
 Assembly likely needs an explicit bias (p_info>0 or energy structure
 favoring long chains). Null, honestly reported.
+
+---
+
+## 2026 post-audit update & scientific reconciliation (Round 7 / `r6`)
+
+Following a thorough scientific, statistical, and methodological audit
+(documented in `review.md`), all 21 campaigns were re-run under the
+remediated codebase (unclipped vector field, exact event-time SSA,
+order-invariant clustering, and anti-pooling guards) into
+`data/validation/r6/`.
+
+Key reconciliations to earlier entries:
+- **Cascade & co-criticality claims**: The E9 ordered cascade and
+  earlier co-criticality indications do not hold across network seeds
+  (all 21 campaigns return `incomparable` or `insufficient_families`).
+  Critical transitions are decoupled and heterogeneous across families.
+- **2D tracking**: The `n8_zoom` tracking verdict was an artifact of
+  cross-family pooling; under $N=16$ runs with multi-level guards,
+  $n_{\text{fam\_multilevel}} = 0$.
+- **Extinction scaling**: Confirmed on seed `e2coop|s3` ($R^2 = 0.9995$
+  across event-time Kaplan-Meier medians: $\tau_{50} = 44.5\text{s}$ at
+  $V=4$, $54.6\text{s}$ at $V=16$, $112.6\text{s}$ at $V=64$).
+- **Limit cycles**: Spurious limit cycles at low dilution ($e2d$,
+  $pilot$) were artifacts of vector-field clipping (`np.maximum(x,0)`)
+  and revert to certified `STATIONARY` equilibria under the unclipped field.
+
+For the full audited claim status and physical interpretation, see
+`docs/HEADLINE_FINDINGS.md`.

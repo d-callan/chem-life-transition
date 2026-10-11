@@ -468,12 +468,14 @@ def measure_run(task: dict) -> dict:
                     st["org"] = (st["nf"] >= floor_v and
                                  st["core"] / st["nf"] > theta_v
                                  if st["nf"] > 0 else False)
+                    if st["org"]:
+                        st["t_first"] = 0.0
                     st["t_prev"] = t
                     return
                 st["dwell"] += float(st["org"]) * (t - st["t_prev"])
                 st["t_prev"] = t
-                st["core"] += d_core[idx] / volume
-                st["nf"] += d_nf[idx] / volume
+                st["core"] = max(0.0, st["core"] + d_core[idx] / volume)
+                st["nf"] = max(0.0, st["nf"] + d_nf[idx] / volume)
                 nf0 = st["nf"]
                 org_now = (nf0 >= floor_v and
                            st["core"] / nf0 > theta_v)
@@ -483,7 +485,7 @@ def measure_run(task: dict) -> dict:
                         st["t_first"] = t
                 st["org"] = org_now
                 if st["t_first"] is not None:
-                    if st["t_abs"] is None and nf0 <= 0.0:
+                    if st["t_abs"] is None and nf0 <= 1e-12:
                         st["t_abs"] = t
                     if st["t_ext"] is None and nf0 < floor_v:
                         st["t_ext"] = t

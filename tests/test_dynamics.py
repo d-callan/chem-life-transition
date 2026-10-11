@@ -359,3 +359,27 @@ def test_sd_map_negative_endpoint_is_failure(monkeypatch):
         net, net.food_inlet.copy(), tau=1.0, d_factor=2.0, n_cycles=2)
     assert not ok and "unphysical" in msg
     assert ends.shape[0] == 0   # failed cycle's state not recorded
+
+
+def test_seeded_ssa_records_event_time_extinction():
+    """Seeded runs (starting organized at t=0) must record t_first=0.0
+    and capture subsequent extinction event times (not report None)."""
+    import json
+    from pathlib import Path
+
+    from chemtrans.measure import measure_run
+
+    p = Path(".devin/campaigns/e3_extinction.json")
+    with p.open() as fh:
+        task = json.load(fh)["task"]
+    task["stochastic"]["volume"] = 16
+    task["seed_key"] = "e2coop|s3"
+    rec = measure_run(task)
+    reps = rec["stochastic"]["replicates"]
+    # All replicates start organized from the reactor x0
+    for r in reps:
+        assert r["t_first_organized"] == 0.0
+        # Replicates that reached zero mass must carry an extinction time
+        if r["O_final"] == 0.0:
+            assert r["t_extinction"] is not None
+            assert 0.0 < r["t_extinction"] <= r["censor_time"]
