@@ -1,0 +1,83 @@
+{
+  "control_axis": {
+    "direction": "negate",
+    "label": "inv_dilution",
+    "param": "reactor.dilution"
+  },
+  "experiment": "cocriticality_2d_dilution_kappa",
+  "lc_boot": 20,
+  "n_networks": 16,
+  "name": "cocrit_2d_dk_n16",
+  "order_parameter": "equilibrium.m_poly",
+  "out_dir": "data/validation",
+  "secondary_axis": "generator.kappa",
+  "summarize_mode": "cocriticality",
+  "sweeps": [
+    {
+      "param": "reactor.dilution",
+      "values": [
+        0.05,
+        0.1,
+        0.2,
+        0.3,
+        0.5,
+        0.7,
+        0.9,
+        1.1
+      ]
+    },
+    {
+      "param": "generator.kappa",
+      "values": [
+        100.0,
+        500.0,
+        1500.0
+      ]
+    }
+  ],
+  "task": {
+    "assembly": {
+      "mass_floor": 0.01
+    },
+    "eps": 0.0,
+    "generator": {
+      "alphabet_size": 2,
+      "cat_power": 2,
+      "chi": 0.7,
+      "delta_mu": 4.0,
+      "kind": "polymer",
+      "ligation": true,
+      "max_len": 4,
+      "n_cat_max": 3,
+      "p_cat": 0.6,
+      "p_info": 0.7,
+      "p_multi": 0.5,
+      "p_selfrep": 0.3
+    },
+    "reactor": {
+      "multistability": {
+        "min_mass": 0.01,
+        "n_ic": 16,
+        "t_max": 600.0
+      },
+      "t_max": 600.0,
+      "type": "cstr",
+      "x0_policy": "dense"
+    },
+    "sensitivity": {
+      "multistability": {
+        "min_mass": [
+          0.005,
+          0.02
+        ],
+        "tol": [
+          0.1,
+          0.15
+        ]
+      }
+    },
+    "stochastic": {
+      "enabled": false
+    }
+  }
+}

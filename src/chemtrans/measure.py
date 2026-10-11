@@ -27,7 +27,7 @@ from .networks import benchmarks as bench
 from .networks.core import ReactionNetwork
 from .networks.generators import polymer_network
 from .observables import assembly, closure, heredity, spectral
-from .provenance import run_id, sha256_json, strict_jsonable
+from .provenance import AUDIT_ROUND, run_id, sha256_json, strict_jsonable
 
 
 def derive_seed(seed_key: str) -> int:
@@ -109,11 +109,16 @@ def measure_run(task: dict) -> dict:
     # run identity covers every analysis-affecting task key (assembly,
     # competition, continuation, ...) — not just gen/reactor/eps/
     # stochastic — so a task that differs only in an analysis block can
-    # never be silently skipped as "already done" on resume
+    # never be silently skipped as "already done" on resume. The audit
+    # round is injected so every remediation epoch hashes to fresh
+    # run_ids — pre-remediation shards are never treated as "done".
+    task = dict(task)
+    task.setdefault("audit_round", AUDIT_ROUND)
     task_identity = {k: v for k, v in task.items()
                      if k not in ("seed_key", "name")}
     task_identity["generator"] = gen_spec   # resolved seed included
     rec["run_id"] = run_id(net.hash, task_identity, seed_key)
+    rec["audit_round"] = task["audit_round"]
 
     # ---- structural block: always emitted (cheap; O_raf context) --
     core = closure.raf_reactions(net)

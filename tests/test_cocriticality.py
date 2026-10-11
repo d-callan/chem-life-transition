@@ -473,3 +473,50 @@ def test_ssa_event_time_observables_and_sensitivity():
     assert "0.2|0.01" in sens["cells"]
     assert sens["primary"] == "0.1|0.01"
     assert len(sens["cells"]["0.2|0.01"]["replicates"]) == 1
+
+
+def test_censor_bracket_bounds_certified_only_lc():
+    """Dropped points near lc must widen the reported bracket: imputing
+    all censored points low vs high bounds the displacement the
+    certified-only estimate hides."""
+    rng = np.random.default_rng(0)
+    lam = np.linspace(0, 1, 40)
+    y = np.where(lam < 0.5, 0.05, 0.05 + 0.9 * (lam - 0.5))
+    y += 0.003 * rng.standard_normal(40)
+    base = cc.estimate_lc_continuous(lam, y, seed=0)
+    # 5 records dropped right at the transition
+    drops = [0.48, 0.50, 0.52, 0.54, 0.56]
+    est = cc.estimate_lc_continuous(lam, y, seed=0, censor_lams=drops)
+    assert est.detail["n_censored"] == 5
+    br = est.detail["lc_censor_bracket"]
+    assert br[0] <= br[1]
+    # the certified-only lc sits inside the censoring bracket
+    assert br[0] <= base.lc <= br[1]
+    # and a real drop near lc produces a non-vanishing bracket
+    assert br[1] - br[0] > 0.05
+
+
+def test_audit_round_labels_records_and_run_id():
+    """Records carry the audit epoch and identical tasks hash to fresh
+    run_ids per round — pre-remediation shards can't satisfy resume."""
+    from chemtrans.provenance import AUDIT_ROUND, run_id
+    task = {
+        "generator": {"kind": "polymer", "max_len": 3,
+                      "alphabet_size": 2, "p_cat": 0.4, "kappa": 5.0,
+                      "seed": 11},
+        "reactor": {"type": "cstr", "dilution": 1.0, "t_max": 50.0},
+        "seed_key": "audit|t1",
+    }
+    rec = measure_run(task)
+    assert rec["audit_round"] == AUDIT_ROUND
+    # the epoch participates in the id: hashing the same task spec
+    # with a different round must produce a different run_id
+    gen = dict(task["generator"])
+    from chemtrans.measure import derive_seed
+    gen.setdefault("seed", derive_seed(task["seed_key"] + "|gen"))
+    ident = {k: v for k, v in task.items() if k not in ("seed_key",
+                                                       "name")}
+    ident["generator"] = gen
+    ident["audit_round"] = "r999"
+    assert run_id(rec["net_hash"], ident,
+                  task["seed_key"]) != rec["run_id"]

@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .critical_points import fit_all_models
+from .critical_points import fit_all_models, lc_from_fit
 
 CONTINUOUS = ("O_maint", "O_persist", "O_assembly")
 DISCRETE = ("O_hered",)
@@ -122,13 +122,35 @@ def extract_series(by_net: dict[str, list[dict]],
     return out
 
 
+def dropped_lams(by_net: dict[str, list[dict]],
+                 obs: str) -> dict[str, list[float]]:
+    """{net_hash: [lam]} for records where O_k is undefined — the
+    non-certified / UNRESOLVED points a certified-only fit cannot see.
+    Their positions relative to the fitted lc matter: drops clustered
+    near lc are exactly where survivorship bias bites."""
+    out = {}
+    for h, recs in by_net.items():
+        drops = []
+        for r in recs:
+            lam = (r.get("control") or {}).get("lam")
+            if lam is None:
+                continue
+            comp = r.get("life_vector", {}).get(obs, {})
+            if not (comp.get("defined") and comp["value"] is not None):
+                drops.append(float(lam))
+        if drops:
+            out[h] = sorted(drops)
+    return out
+
+
 def _clean_aicc(aicc: dict) -> dict:
     return {m: (float(v) if np.isfinite(v) else None)
             for m, v in aicc.items()}
 
 
 def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
-                           seed: int = 0, n_boot: int = 0) -> LcEstimate:
+                           seed: int = 0, n_boot: int = 0,
+                           censor_lams=None) -> LcEstimate:
     fit = fit_all_models(lam, y, seed=seed)
     sel, params = fit["selected"], fit["params"]
     detail = {"selected": sel, "aicc": _clean_aicc(fit["aicc"])}
@@ -163,6 +185,26 @@ def estimate_lc_continuous(lam: np.ndarray, y: np.ndarray,
                 var = sum(w * (v - mean) ** 2 for w, v in lcs) / wsum
                 detail["lc_aicc_avg"] = float(mean)
                 detail["lc_model_spread"] = float(np.sqrt(var))
+    if censor_lams:
+        # survivorship bracket: a dropped point hides either a
+        # pre-transition or a post-transition state. Refit with ALL
+        # censored points imputed at each extreme of the family's own
+        # range — the two fitted lc's bound the displacement the
+        # certified-only estimate conceals. Drops near lc widen the
+        # bracket; drops far from it barely move it.
+        cl = np.asarray(list(censor_lams), float)
+        detail["n_censored"] = len(cl)
+        detail["censor_lams"] = [float(v) for v in cl]
+        bounds = []
+        for fill in (float(y.min()), float(y.max())):
+            lam_b = np.concatenate([lam, cl])
+            y_b = np.concatenate([y, np.full(len(cl), fill)])
+            lcb = lc_from_fit(fit_all_models(lam_b, y_b, seed=seed))
+            if lcb is not None:
+                bounds.append(lcb)
+        if bounds:
+            detail["lc_censor_bracket"] = [
+                float(min(bounds)), float(max(bounds))]
     if sel in _LC_MAP:
         key, cls = _LC_MAP[sel]
         if sel in ("fold", "fold_rev"):
@@ -312,13 +354,15 @@ def lc_by_family(by_net: dict[str, list[dict]], obs: str,
     if obs in CONDITIONAL:
         return {}
     series = extract_series(by_net, obs)
+    drops = dropped_lams(by_net, obs)
     out = {}
     for fam, (lam, y) in series.items():
         if obs in DISCRETE:
             out[fam] = _lc_discrete_family(lam, y)
         else:
-            out[fam] = estimate_lc_continuous(lam, y, seed=seed,
-                                              n_boot=lc_boot)
+            out[fam] = estimate_lc_continuous(
+                lam, y, seed=seed, n_boot=lc_boot,
+                censor_lams=drops.get(fam))
     return out
 
 
@@ -521,7 +565,15 @@ def coincidence_report(by_net: dict[str, list[dict]],
         "family_estimates": {
             o: {f: {"lc": e.lc, "class": e.transition_class,
                     **({"extrapolated": True}
-                       if e.detail.get("extrapolated") else {})}
+                       if e.detail.get("extrapolated") else {}),
+                    **({"n_censored": e.detail["n_censored"],
+                        "censor_lams": e.detail["censor_lams"],
+                        "lc_censor_bracket":
+                            e.detail["lc_censor_bracket"]}
+                       if e.detail.get("lc_censor_bracket")
+                       else {"n_censored": e.detail["n_censored"],
+                             "censor_lams": e.detail["censor_lams"]}
+                       if e.detail.get("n_censored") else {})}
                 for f, e in per_fam[o].items()}
             for o in observables},
         "point_estimates": {

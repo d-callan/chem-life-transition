@@ -34,6 +34,16 @@
       "max_events": 4000000,
       "theta_organized": 0.1,
       "x0_from": "reactor"
+    },
+    "sensitivity": {
+      "stochastic": {
+        "theta_organized": [0.05, 0.15, 0.2],
+        "mass_floor": [0.005, 0.02]
+      },
+      "multistability": {
+        "tol": [0.1, 0.15],
+        "min_mass": [0.005, 0.02]
+      }
     }
   },
   "sweeps": [
@@ -44,6 +54,7 @@
   "seed_keys": ["e1land|net3", "e1land|net7", "e1land|net1"],
   "order_parameter": "equilibrium.m_poly",
   "summarize_mode": "cocriticality",
+  "lc_boot": 40,
   "control_negate": true,
   "out_dir": "data/validation"
 }

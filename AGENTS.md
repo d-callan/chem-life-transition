@@ -16,8 +16,12 @@ exact falling-factorial SSA.
 - Compile check: `python -m compileall -q src experiments`
 - Campaigns: `experiments/campaign.py {validate|plan|run|summarize}`
   with protocols in `.devin/campaigns/*.json`. Outputs land in
-  `data/{validation,pilots,confirmation}/<name>-<protocol_hash>/` —
-  gitignored, resumable, manifest-gated.
+  `data/{validation,pilots,confirmation}/<audit_round>/<name>-<protocol_hash>/` —
+  gitignored, resumable, manifest-gated. The `audit_round` epoch
+  (`provenance.AUDIT_ROUND`) is injected into every task identity, so
+  a bumped round produces fresh run_ids and its own directory —
+  pre-remediation artifacts at the flat path are never overwritten or
+  pooled with new data.
 
 ## Invariants to preserve (do not regress)
 

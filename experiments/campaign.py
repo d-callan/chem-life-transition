@@ -5,7 +5,7 @@ A protocol JSON specifies the fixed generator + reactor spec, a sweep
 (dotted param path -> values), network replicates (seeds), and an
 output directory. Everything downstream is content-addressed:
 
-- campaign dir: <out_dir>/<name>-<protocol_hash[:12]>
+- campaign dir: <out_dir>/<audit_round>/<name>-<protocol_hash[:12]>
 - manifest.json: protocol, hashes, environment, decisions — immutable;
   a rerun with an incompatible protocol hash is rejected.
 - shard-*.jsonl: append-only run records; a run whose run_id already
@@ -32,6 +32,7 @@ import numpy as np
 
 from chemtrans.measure import derive_seed, measure_run
 from chemtrans.provenance import (
+    AUDIT_ROUND,
     code_version,
     environment,
     sha256_json,
@@ -84,13 +85,18 @@ def expand_tasks(protocol: dict) -> list[dict]:
 
 def campaign_dir(protocol: dict) -> Path:
     ph = sha256_json(protocol)[:12]
-    return Path(protocol["out_dir"]) / f"{protocol['name']}-{ph}"
+    # epoch-scoped output: each remediation round writes into its own
+    # subdirectory so pre- and post-fix artifacts never share a shard
+    # or a manifest. Pre-remediation campaigns live at the flat path.
+    return (Path(protocol["out_dir"]) / AUDIT_ROUND
+            / f"{protocol['name']}-{ph}")
 
 
 def write_manifest(protocol: dict, cdir: Path):
     manifest = {
         "protocol_hash": sha256_json(protocol),
         "protocol": protocol,
+        "audit_round": AUDIT_ROUND,
         "code_version": code_version(
             Path(__file__).resolve().parent.parent),
         "environment": environment(),
@@ -256,8 +262,11 @@ def _preview_id(task_entry: dict) -> str:
     gen.setdefault("seed", derive_seed(task_entry["seed_key"] + "|gen"))
     net, _ = build_network(gen)
     # must hash the same task identity as measure_run: every
-    # analysis-affecting key, not just gen/reactor/eps/stochastic
-    task_identity = {k: v for k, v in task_entry["task"].items()
+    # analysis-affecting key, not just gen/reactor/eps/stochastic —
+    # including the injected audit_round (fresh ids per epoch)
+    task = dict(task_entry["task"])
+    task.setdefault("audit_round", AUDIT_ROUND)
+    task_identity = {k: v for k, v in task.items()
                      if k not in ("seed_key", "name")}
     task_identity["generator"] = gen
     return run_id(net.hash, task_identity, task_entry["seed_key"])
@@ -472,10 +481,11 @@ def cmd_summarize(args):
         for v, obs in sorted(vol_groups.items()):
             tab = _pers.survival_table(obs)
             t_k, S, _se = _pers.kaplan_meier(tab["times"], tab["events"])
-            # KM median survival — the first crossing S < 0.5; None
-            # when censoring keeps the curve above 0.5 throughout
-            med = (float(t_k[int(np.argmax(S < 0.5))])
-                   if np.any(S < 0.5) else None)
+            # KM median survival — first time S <= 0.5 (standard
+            # convention); None when censoring keeps the curve above
+            # 0.5 throughout
+            med = (float(t_k[int(np.argmax(S <= 0.5))])
+                   if np.any(S <= 0.5) else None)
             surv[str(v)] = {
                 "n": tab["n"], "n_events": tab["n_events"],
                 "n_censored": tab["n_censored"],

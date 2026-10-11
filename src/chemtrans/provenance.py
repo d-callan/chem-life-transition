@@ -81,6 +81,15 @@ def environment() -> dict:
     }
 
 
+# Data-generation epoch: bumped when remediation changes result
+# semantics. Injected into task identity by measure_run, so every
+# audit round produces fresh run_ids (no resume-skipping against
+# pre-remediation shards) and records are self-labeling — old runs
+# simply lack the field. Do NOT bump for cosmetic changes; bump when
+# generated numbers can differ from a prior round's code.
+AUDIT_ROUND = "r6"
+
+
 def run_id(net_hash: str, params: dict, seed_key: str) -> str:
     """Deterministic run identity: hash of (network, params, seed key)."""
     return sha256_json({"net": net_hash, "params": params,
