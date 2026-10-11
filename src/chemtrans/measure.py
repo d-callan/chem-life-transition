@@ -383,6 +383,56 @@ def measure_run(task: dict) -> dict:
             else:
                 obs = closure.phi_decomposition(net, ends[-1], eps)
                 rec["final_state"] = {"mass_raf": obs["mass_raf"]}
+    elif rtype == "protocell_population":
+        # multilevel selection: a population of semi-permeable vesicles
+        # competes for a shared lipid pool via osmotic swelling, lysis,
+        # and growth-triggered stochastic division.
+        from .dynamics import protocell_pop as ppop
+        a_spec = task.get("assembly") or {}
+        pop = ppop.ProtocellPopulation(
+            net,
+            n_cells=int(reactor.get("n_cells", 40)),
+            v0=float(reactor.get("v0", 1.0)),
+            mu_growth=float(reactor.get("mu_growth", 1.0)),
+            d_leak=float(reactor.get("d_leak", 0.0)),
+            p_fast=float(reactor.get("p_fast", 1.0)),
+            p_dimer=float(reactor.get("p_dimer", 0.2)),
+            p_polymer=float(reactor.get("p_polymer", 0.01)),
+            omega=float(reactor.get("omega", 1000.0)),
+            n_max=(int(reactor["n_max"]) if "n_max" in reactor
+                   else None),
+            chunk=float(reactor.get("chunk", 2.0)),
+            seed=derive_seed(seed_key + "|pop"),
+            m_init=int(reactor.get("m_init", 40)))
+        res = pop.run(t_max=float(reactor.get("t_max", 500.0)))
+        retained = np.asarray(net.polymer_lengths, float) >= 3
+        Ls = sorted({int(l) for l in net.polymer_lengths if l >= 3})
+        length_masks = {
+            L: np.asarray(net.polymer_lengths) == L for L in Ls}
+        a_cut = int(a_spec.get("a_cut", 5))
+        mass_floor = float(a_spec.get("mass_floor", 0.01))
+        ma = np.zeros(net.n_species)
+        for i in range(net.n_species):
+            if not net.is_food[i]:
+                ma[i] = assembly.assembly_index(net.species[i])[0]
+        rec["det"] = {"type": rtype, "status": res.status,
+                      "message": res.message}
+        rec["protocell_population"] = {
+            "status": res.status,
+            "n_alive": int(len(res.v_cells)),
+            "n_initial": res.n_initial,
+            "n_divisions": res.n_divisions,
+            "n_lysis": res.n_lysis,
+            "n_alive_hist": res.n_alive_hist,
+            "speciation_index": ppop.speciation_index(
+                res.x_cells, retained),
+            "per_cell_sparsity": ppop.per_cell_sparsity(
+                res.x_cells, length_masks),
+            "signature": ppop.signature_cells(
+                res.x_cells, ma, a_cut, mass_floor),
+            "a_cut": a_cut,
+            "mass_floor": mass_floor,
+        }
     else:
         raise ValueError(f"unknown reactor type {rtype!r}")
 

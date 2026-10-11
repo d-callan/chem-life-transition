@@ -1,0 +1,56 @@
+{
+  "name": "protocell_selection_l6",
+  "experiment": "osmotic_protocell_competition_L6",
+  "task": {
+    "generator": {
+      "kind": "polymer",
+      "alphabet_size": 2,
+      "max_len": 6,
+      "p_cat": 0.5,
+      "p_info": 0.0,
+      "p_selfrep": 0.3,
+      "delta_mu": 4.0,
+      "chi": 0.7,
+      "eps": 0.001,
+      "kappa": 500.0,
+      "cat_power": 2,
+      "min_cat_len": 2,
+      "cat_len_power": 2.0,
+      "ligation": true,
+      "p_cat_lig": 0.5,
+      "k_join": 10.0,
+      "f_dimer": 0.4,
+      "templated_ligation": true,
+      "delta_g_pair": 2.0,
+      "delta_g_mismatch": 2.0,
+      "w_max_template": 100.0,
+      "w_min_template": 1.5
+    },
+    "eps": 0.0,
+    "assembly": {"a_cut": 5, "mass_floor": 0.01},
+    "reactor": {
+      "type": "protocell_population",
+      "n_cells": 40,
+      "v0": 1.0,
+      "mu_growth": 0.0,
+      "d_leak": 0.0,
+      "p_fast": 1.0,
+      "p_dimer": 0.2,
+      "omega": 1000.0,
+      "n_max": 60,
+      "m_init": 40,
+      "dt": 0.2,
+      "chunk": 2.0,
+      "t_max": 500.0
+    }
+  },
+  "sweeps": [
+    {"param": "reactor.mu_growth",
+     "values": [0.0, 0.5, 2.0, 5.0]},
+    {"param": "reactor.omega",
+     "values": [200.0, 1000.0]}
+  ],
+  "n_networks": 4,
+  "order_parameter": "protocell_population.n_alive",
+  "out_dir": "data/pilots"
+}
