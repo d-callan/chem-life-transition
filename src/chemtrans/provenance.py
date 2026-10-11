@@ -87,7 +87,7 @@ def environment() -> dict:
 # pre-remediation shards) and records are self-labeling — old runs
 # simply lack the field. Do NOT bump for cosmetic changes; bump when
 # generated numbers can differ from a prior round's code.
-AUDIT_ROUND = "r6"
+AUDIT_ROUND = "r7"
 
 
 def run_id(net_hash: str, params: dict, seed_key: str) -> str:

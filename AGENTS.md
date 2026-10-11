@@ -80,6 +80,14 @@ exact falling-factorial SSA.
 7. **Honest nulls.** A flat-line order parameter is a legitimate
    outcome (model selection includes "null" and it can win). Never
    tune parameters to force a transition.
+8. **Edge-weighted catalysis stays symmetric.** `Channel.cat_w`
+   (template affinity etc.) is a per-edge multiplier inside the
+   common catalytic boost — identical on fwd/rev, never touching
+   `k_f/k_r`. The `k_inhibit` denominator uses the *binary* catalyst
+   incidence (`_catalysis_binary`), not weighted affinity.
+9. **Sequence observables report undefined honestly.** Empty
+   length-pools yield `sparsity=null`, never 0/1; a single-sequence
+   pool is sparsity=1, a uniform pool is 0.
 
 ## Known traps (learned during the rebuild)
 

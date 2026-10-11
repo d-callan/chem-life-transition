@@ -26,7 +26,7 @@ from .dynamics import gillespie, ode
 from .networks import benchmarks as bench
 from .networks.core import ReactionNetwork
 from .networks.generators import polymer_network
-from .observables import assembly, closure, heredity, spectral
+from .observables import assembly, closure, heredity, sparsity, spectral
 from .provenance import AUDIT_ROUND, run_id, sha256_json, strict_jsonable
 
 
@@ -228,6 +228,7 @@ def measure_run(task: dict) -> dict:
                 "nonzero_mass_species": int(np.sum(x > 1e-10)),
                 "m_poly": _nonfood_mass(net, x),
                 "assembly_signature": _assembly_sig(net, x, task),
+                "sequence_sparsity": sparsity.sparsity_report(net, x),
                 "x_eq": x,
             }
             a_spec = (task.get("assembly") or {})
@@ -375,6 +376,8 @@ def measure_run(task: dict) -> dict:
                     "phi_net": obs["phi_net"],
                     **floquet,
                     "m_poly": _nonfood_mass(net, ends[-1]),
+                    "sequence_sparsity": sparsity.sparsity_report(
+                        net, ends[-1]),
                     "x_eq": ends[-1],
                 }
             else:

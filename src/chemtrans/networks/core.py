@@ -79,6 +79,13 @@ class Channel:
         does not fail on it; an undeclared irreversible channel fails.
     mechanism: free-form label ("elongation", "thermal", "hydrolysis",
         "deactivation", "background", ...).
+    cat_w: optional per-catalyst edge weights, aligned with `catalysts`
+        (empty means every edge weight is 1.0). Used by physically
+        derived catalysis — e.g. template affinity weights on ligation
+        channels — where catalyst potency depends on the (channel,
+        catalyst) pair rather than the catalyst alone. The edge weight
+        multiplies kappa*cat_weights[c] identically in both directions,
+        so detailed balance is preserved.
     """
 
     reactants: tuple[tuple[int, int], ...]
@@ -90,6 +97,7 @@ class Channel:
     mechanism: str = "background"
     synth_dir: str = "both"
     driven: bool = False
+    cat_w: tuple[float, ...] = ()
 
     @property
     def nu(self) -> dict[int, int]:
@@ -220,6 +228,15 @@ class ReactionNetwork:
             for c in ch.catalysts:
                 if not (0 <= c < n):
                     raise ValueError("catalyst index out of range")
+            if ch.cat_w:
+                if len(ch.cat_w) != len(ch.catalysts):
+                    raise ValueError(
+                        "cat_w must align with catalysts "
+                        f"(got {len(ch.cat_w)} weights for "
+                        f"{len(ch.catalysts)} catalysts)")
+                if any((not np.isfinite(w)) or w <= 0 for w in ch.cat_w):
+                    raise ValueError("cat_w entries must be positive "
+                                     "finite floats")
             if not np.isfinite(ch.k_f) or not np.isfinite(ch.k_r):
                 raise ValueError("rates must be finite")
             if ch.k_f < 0 or ch.k_r < 0:
@@ -329,28 +346,56 @@ class ReactionNetwork:
             shape=(self.n_species, self.n_channels))
 
     def catalysis_matrix(self) -> np.ndarray:
-        """C[r, c] = 1 if species c catalyzes channel r (alternatives)."""
+        """C[r, c] = catalytic edge weight of species c on channel r.
+
+        1.0 for a plain catalyst; Channel.cat_w supplies a per-edge
+        weight when potency depends on the (channel, catalyst) pair
+        (e.g. template complementarity on ligation channels)."""
         if "C" not in self._cache:
             if self.use_sparse:
                 self._cache["C"] = self._catalysis_sparse()
             else:
                 C = np.zeros((self.n_channels, self.n_species))
                 for r, ch in enumerate(self.channels):
-                    for c in ch.catalysts:
-                        C[r, c] = 1.0
+                    for k, c in enumerate(ch.catalysts):
+                        C[r, c] = (ch.cat_w[k] if ch.cat_w else 1.0)
                 self._cache["C"] = C
         return self._cache["C"]
 
     def _catalysis_sparse(self):
         import scipy.sparse as sp
-        rows, cols = [], []
+        rows, cols, data = [], [], []
         for r, ch in enumerate(self.channels):
-            for c in ch.catalysts:
+            for k, c in enumerate(ch.catalysts):
                 rows.append(r); cols.append(c)
+                data.append(ch.cat_w[k] if ch.cat_w else 1.0)
         return sp.csr_matrix(
-            (np.ones(len(rows)),
+            (np.asarray(data),
              (np.asarray(rows), np.asarray(cols))),
             shape=(self.n_channels, self.n_species))
+
+    def _catalysis_binary(self):
+        """Unweighted 0/1 catalyst incidence — used where catalyst
+        *concentrations* (not edge-weighted activity) are needed,
+        e.g. the k_inhibit denominator sum_{c in C_r} x_c."""
+        if "Cbin" not in self._cache:
+            if self.use_sparse:
+                import scipy.sparse as sp
+                rows, cols = [], []
+                for r, ch in enumerate(self.channels):
+                    for c in ch.catalysts:
+                        rows.append(r); cols.append(c)
+                self._cache["Cbin"] = sp.csr_matrix(
+                    (np.ones(len(rows)),
+                     (np.asarray(rows), np.asarray(cols))),
+                    shape=(self.n_channels, self.n_species))
+            else:
+                Cb = np.zeros((self.n_channels, self.n_species))
+                for r, ch in enumerate(self.channels):
+                    for c in ch.catalysts:
+                        Cb[r, c] = 1.0
+                self._cache["Cbin"] = Cb
+        return self._cache["Cbin"]
 
     def _factors(self) -> tuple[np.ndarray, np.ndarray, int]:
         """Per-channel participant index lists for fwd/rev directions,
@@ -406,7 +451,8 @@ class ReactionNetwork:
             # identical divisor on both directions, so k_f/k_r and
             # detailed balance are preserved
             cat = cat / (1.0 + self.k_inhibit
-                         * np.asarray(C @ x).ravel())
+                         * np.asarray(self._catalysis_binary()
+                                      @ x).ravel())
         boost_f = np.where(gate_f, eps, 1.0) + cat
         boost_r = np.where(gate_r, eps, 1.0) + cat
         mf = np.prod(x_app[Rf], axis=1)
@@ -447,8 +493,10 @@ class ReactionNetwork:
             C @ (self.cat_weights
                  * np.power(x, self.cat_power))).ravel()
         # inhibition denominator per channel: 1 + K * sum_{c in C_r} x_c
+        # (catalyst concentrations — unweighted binary incidence)
         if self.k_inhibit:
-            denom = 1.0 + self.k_inhibit * np.asarray(C @ x).ravel()
+            denom = (1.0 + self.k_inhibit
+                     * np.asarray(self._catalysis_binary() @ x).ravel())
         else:
             denom = np.ones(self.n_channels)
         mf = np.prod(x_app[Rf], axis=1)
@@ -483,8 +531,12 @@ class ReactionNetwork:
                 # Cx_r*K)/denom^2; at K=0 reduces to kappa*w_c*p*x_c^(p-1).
                 # Raw power, matching the unclipped rate law in rates();
                 # integer cat_power keeps this finite at any real x.
+                edge_w = C[r, cat_idx]
+                if hasattr(edge_w, "todense"):
+                    edge_w = np.asarray(edge_w.todense())
                 dpow = (self.cat_power * self.cat_weights[cat_idx]
-                        * np.power(x[cat_idx], self.cat_power - 1))
+                        * np.power(x[cat_idx], self.cat_power - 1)
+                        * np.asarray(edge_w).ravel())
                 if self.k_inhibit:
                     dpow = ((dpow * denom[r]
                              - Cx[r] * self.k_inhibit)
@@ -493,16 +545,21 @@ class ReactionNetwork:
                 Db[r, cat_idx] += kr[r] * mr[r] * self.kappa * dpow
         return Df, Db
 
-    def _cat_idx_padded(self) -> tuple[np.ndarray, int]:
-        """(nc x mc) padded catalyst index array, sentinel n_species."""
+    def _cat_idx_padded(self) -> tuple[np.ndarray, np.ndarray, int]:
+        """(nc x mc) padded catalyst index array (sentinel n_species)
+        and parallel per-edge weight array (1.0 padding/defaults)."""
         if "catidx" not in self._cache:
             cats = [ch.catalysts for ch in self.channels]
             mc = max([len(c) for c in cats] + [1])
             R = np.full((self.n_channels, mc), self.n_species,
                         dtype=int)
+            W = np.ones((self.n_channels, mc))
             for r, c in enumerate(cats):
                 R[r, : len(c)] = c
-            self._cache["catidx"] = (R, mc)
+                ch = self.channels[r]
+                if ch.cat_w:
+                    W[r, : len(c)] = ch.cat_w
+            self._cache["catidx"] = (R, W, mc)
         return self._cache["catidx"]
 
     def _d_rates_sparse(self, x: np.ndarray, eps: float):
@@ -522,7 +579,8 @@ class ReactionNetwork:
             C @ (self.cat_weights
                  * np.power(x, self.cat_power))).ravel()
         if self.k_inhibit:
-            denom = 1.0 + self.k_inhibit * np.asarray(C @ x).ravel()
+            denom = (1.0 + self.k_inhibit
+                     * np.asarray(self._catalysis_binary() @ x).ravel())
         else:
             denom = np.ones(self.n_channels)
         cat_term = self.kappa * Cx / denom
@@ -548,7 +606,7 @@ class ReactionNetwork:
                 cols.append(s[mask])
                 data.append((kvec * (bg + cat_term)
                              * others)[mask])
-        Rc, mc = self._cat_idx_padded()
+        Rc, Wc, mc = self._cat_idx_padded()
         for pos in range(mc):
             c = Rc[:, pos]
             mask = c < n
@@ -557,7 +615,8 @@ class ReactionNetwork:
             dpow = (self.cat_power
                     * self.cat_weights[np.where(mask, c, 0)]
                     * np.power(x[np.where(mask, c, 0)],
-                               self.cat_power - 1))
+                               self.cat_power - 1)
+                    * Wc[:, pos])
             if self.k_inhibit:
                 # quotient rule on kappa*Cx/denom (denominator is
                 # per-channel, shared across catalyst positions)
@@ -710,6 +769,7 @@ class ReactionNetwork:
                     "reactants": [list(t) for t in ch.reactants],
                     "products": [list(t) for t in ch.products],
                     "catalysts": list(ch.catalysts),
+                    "cat_w": list(ch.cat_w),
                     "k_f": ch.k_f,
                     "k_r": ch.k_r,
                     "synth": ch.synth,
@@ -739,6 +799,7 @@ class ReactionNetwork:
                 mechanism=c["mechanism"],
                 synth_dir=c.get("synth_dir", "both"),
                 driven=c.get("driven", False),
+                cat_w=tuple(c.get("cat_w") or ()),
             )
             for c in d["channels"]
         ]

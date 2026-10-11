@@ -120,7 +120,7 @@ def build_processes(net: ReactionNetwork, dilution: float,
                 procs.append(Process(
                     rate=k, participants=parts, offsets=_mk_offsets(list(parts)),
                     delta=delta, kind="channel", channel=r))
-        for c in ch.catalysts:
+        for kc, c in enumerate(ch.catalysts):
             if hazard_mode == "participants":
                 # cooperative catalysis: cat_power copies of c participate
                 cat_parts = (c,) * net.cat_power
@@ -128,10 +128,12 @@ def build_processes(net: ReactionNetwork, dilution: float,
             else:
                 cat_parts = ()
                 boost = (c, net.cat_power)
-            # length-weighted potency folds into the rate constant:
-            # identical multiplier on both directions, matching the
-            # ODE's symmetric catalysis (detailed balance untouched)
-            kcat = net.kappa * float(net.cat_weights[c])
+            # length-weighted potency and per-edge weights fold into
+            # the rate constant: identical multiplier on both
+            # directions, matching the ODE's symmetric catalysis
+            # (detailed balance untouched)
+            edge_w = float(ch.cat_w[kc]) if ch.cat_w else 1.0
+            kcat = net.kappa * float(net.cat_weights[c]) * edge_w
             # shared per-channel inhibition denominator (product
             # inhibition / site saturation) — same divisor in both
             # hazard modes, matching the ODE boost/(1+K*sum x_c)

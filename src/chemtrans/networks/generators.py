@@ -73,6 +73,14 @@ def _all_strings(alphabet: list[str], max_len: int) -> list[str]:
     return out
 
 
+_COMP_TABLE = str.maketrans({"A": "B", "B": "A"})
+
+
+def _complement(s: str) -> str:
+    """Watson-Crick complement for the 2-letter alphabet (A<->B)."""
+    return s.translate(_COMP_TABLE)
+
+
 def polymer_network(
     alphabet_size: int = 2,
     max_len: int = 4,
@@ -87,6 +95,11 @@ def polymer_network(
     ligation: bool = False,
     p_cat_lig: float | None = None,
     k_join: float = 1.0,
+    templated_ligation: bool = False,
+    delta_g_pair: float = 0.0,
+    delta_g_mismatch: float = 2.0,
+    w_max_template: float = 100.0,
+    w_min_template: float = 1.5,
     delta_mu: float = 4.0,
     chi: float = 1.0,
     f_inlet: float = 1.0,
@@ -167,6 +180,19 @@ def polymer_network(
     food.add(index["W"])
     if not np.isfinite(f_dimer) or not 0.0 <= f_dimer < 1.0:
         raise ValueError("f_dimer must be in [0, 1)")
+    if templated_ligation:
+        if not ligation:
+            raise ValueError("templated_ligation requires ligation=True")
+        if alphabet_size != 2:
+            raise ValueError(
+                "templated_ligation supports alphabet_size=2 only")
+        if not np.isfinite(delta_g_pair) or delta_g_pair < 0:
+            raise ValueError("delta_g_pair must be nonnegative")
+        if not np.isfinite(delta_g_mismatch) or delta_g_mismatch < 0:
+            raise ValueError("delta_g_mismatch must be nonnegative")
+        if not (0.0 < w_min_template <= w_max_template):
+            raise ValueError(
+                "need 0 < w_min_template <= w_max_template")
 
     food_inlet = np.zeros(n)
     for a in alphabet:
@@ -333,7 +359,32 @@ def polymer_network(
             i1, i2, i12 = index[p1], index[p2], index[p12]
             dG = g[i12] - g[i1] - g[i2]          # = g_bond
             cats: tuple[int, ...] = ()
-            if v_cat[q] < p_cl and candidates:
+            cat_w: tuple[float, ...] = ()
+            if templated_ligation:
+                # Watson-Crick template affinity: a strand T catalyzes
+                # P1+P2 -> P12 with weight exp(m*dg_pair - u*dg_mm),
+                # where m/u are match/mismatch counts against the
+                # complement of P12. Replaces the random catalyst
+                # lottery — potency is derived from string syntax.
+                comp12 = _complement(p12)
+                t_idx, t_w = [], []
+                for s in strings:
+                    if len(s) != len(p12):
+                        continue
+                    st = s
+                    m = sum(1 for k in range(len(st))
+                            if st[k] == comp12[k])
+                    u = len(st) - m
+                    z = m * delta_g_pair - u * delta_g_mismatch
+                    w = (w_max_template if z >= np.log(w_max_template)
+                         else float(np.exp(z)))
+                    if w >= w_min_template:
+                        t_idx.append(index[st]); t_w.append(w)
+                if t_idx:
+                    order = np.argsort(t_idx)
+                    cats = tuple(t_idx[o] for o in order)
+                    cat_w = tuple(float(t_w[o]) for o in order)
+            elif v_cat[q] < p_cl and candidates:
                 cat_list = [pick_catalyst(v_self[q], v_info[q],
                                           v_kin[q], p12, i12)]
                 for m in range(m_extra):
@@ -352,6 +403,7 @@ def polymer_network(
                 catalysts=cats,
                 k_f=k_join, k_r=k_join * np.exp(dG),
                 synth=True, mechanism="ligation",
+                cat_w=cat_w,
             ))
 
     for a in alphabet:
@@ -387,6 +439,11 @@ def polymer_network(
             min_cat_len=min_cat_len, cat_max_len=cat_max_len,
             n_cat_max=n_cat_max, p_multi=p_multi,
             ligation=ligation, p_cat_lig=p_cat_lig, k_join=k_join,
+            templated_ligation=templated_ligation,
+            delta_g_pair=delta_g_pair,
+            delta_g_mismatch=delta_g_mismatch,
+            w_max_template=w_max_template,
+            w_min_template=w_min_template,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
             kappa=kappa, cat_power=cat_power,
             cat_len_power=cat_len_power, k_inhibit=k_inhibit,

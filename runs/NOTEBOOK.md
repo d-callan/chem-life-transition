@@ -380,3 +380,56 @@ Per `docs/IMPLEMENTATION_PLAN_LIGATION_AND_ENV_FEED.md` (IMPLEMENTED):
   sits dead; the combination ignites the full length spectrum.
 - Campaigns launched: `ligation_nuc_l6` (48, no feed) and
   `dimerfeed_l6` (48, f_dimer x ligation x rho).
+
+---
+
+## Templated Ligation & Sequence-Pruning Plan
+
+Per `docs/IMPLEMENTATION_PLAN_TEMPLATED_LIGATION.md`:
+- Documented physical base-pairing thermodynamics: Watson-Crick
+  complementarity (A <-> B) generating duplex binding free energy
+  dG_bind = -m*delta_g_pair + u*delta_g_mismatch.
+- Proximity-boost rate law w(T, P12) = min(exp(-dG_bind), W_max)
+  derives templated catalysis directly from physical chemistry
+  rather than arbitrary assignment.
+- Defined exact sequence-entropy and sequence-sparsity observables
+  (H_L, N_eff, O_sparsity) to rigorously quantify negative selection
+  and sequence-space pruning.
+- Designed experimental campaign sweeping delta_g_pair to test
+  the spontaneous collapse of sequence entropy.
+
+---
+
+## Templated ligation — IMPLEMENTED (per-edge Watson-Crick weights)
+
+Per `docs/IMPLEMENTATION_PLAN_TEMPLATED_LIGATION.md` §7 (as-built):
+
+- `Channel.cat_w`: optional per-catalyst edge weight (empty = legacy
+  1.0). `catalysis_matrix()` returns weighted incidence;
+  `_catalysis_binary()` preserves 0/1 incidence for the k_inhibit
+  denominator. Threaded through rates, dense+sparse d_rates
+  (finite-diff verified ~1e-10 rel), SSA kcat (both hazard modes),
+  to_dict/from_dict, and net.hash.
+- `generator.templated_ligation` (requires ligation=True, K=2):
+  replaces the p_cat_lig lottery on ligation channels. Every strand T
+  with len(T)==len(P12) gets w = min(exp(m*delta_g_pair -
+  u*delta_g_mismatch), w_max_template); edges kept iff
+  w >= w_min_template (1.5). delta_g_pair=0 -> zero template edges
+  (recognition-absent control), distinct from blind ligation.
+- `observables/sparsity.py`: per-length Shannon entropy H_L,
+  N_eff=2^H, O_sparsity=1-H/Hmax; empty pools -> sparsity=null.
+  Recorded under equilibrium.sequence_sparsity in measure_run.
+- 18 new tests in tests/test_templated_ligation.py; detailed balance,
+  letter conservation, and fwd/rev symmetry verified.
+- Campaign `template_lig_l6` (80 cells): templated x dg_pair
+  {0,0.5,1,2,3} x 8 seeds, fixed productive regime (f_dimer=0.4,
+  rho=0.9, k_join=10, kappa=500). Output data/pilots/r6/
+  template_lig_l6-f51ef87f5506.
+
+**r6 -> r7 remediation**: sparsity.py first pass leaked ODE solver
+negative excursions into the entropy sum — near-empty length shells
+produced H < 0 and sparsity > 1 (observed 3.41 on net3 L4). Fixed:
+negatives clipped + reported as neg_mass_abs; pools below MASS_FLOOR
+or with neg_mass > 0.5*pool_mass report sparsity=null. The r6
+template_lig_l6-f51ef87f5506 shard (50 records) is a pre-fix artifact;
+canonical data is the r7 run.
