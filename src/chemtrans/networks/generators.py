@@ -93,6 +93,7 @@ def polymer_network(
     eps: float = 1.0,
     kappa: float = 1.0,
     cat_power: int = 1,
+    cat_len_power: float = 0.0,
     g_bond: float = 1.0,
     k_lig: float = 1.0,
     k_hyd: float = 0.1,
@@ -110,6 +111,13 @@ def polymer_network(
       g(monomer) = 0, g(A*) = delta_mu, g(W) = 0,
       g(P) = g_bond * (len(P) - 1).
       k_r is derived: k_r = k_f * exp(dG)  (k_f/k_r = exp(-dG) = K_eq).
+
+    cat_len_power scales each catalyst's potency by (len/2)^alpha —
+    a phenomenological folding heuristic: alpha=0 (default) gives all
+    catalysts equal weight (legacy); alpha>0 makes longer polymers
+    disproportionately better catalysts so short homopolymers cannot
+    carry the whole RAF. Symmetric across directions; detailed
+    balance is unaffected.
     """
     if alphabet_size < 1 or max_len < 2:
         raise ValueError("need alphabet_size>=1 and max_len>=2")
@@ -344,6 +352,7 @@ def polymer_network(
         kappa=kappa,
         eps=eps,
         cat_power=cat_power,
+        cat_len_power=cat_len_power,
         sparse=sparse,
         params=dict(
             generator=GENERATOR_VERSION,
@@ -353,7 +362,8 @@ def polymer_network(
             n_cat_max=n_cat_max, p_multi=p_multi,
             ligation=ligation, p_cat_lig=p_cat_lig, k_join=k_join,
             delta_mu=delta_mu, chi=chi, f_inlet=f_inlet, eps=eps,
-            kappa=kappa, cat_power=cat_power, g_bond=g_bond,
+            kappa=kappa, cat_power=cat_power,
+            cat_len_power=cat_len_power, g_bond=g_bond,
             k_lig=k_lig, k_hyd=k_hyd, k_deact=k_deact,
             seed=seed,
         ),

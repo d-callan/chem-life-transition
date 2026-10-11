@@ -129,6 +129,7 @@ class ReactionNetwork:
         kappa=1.0,
         eps=1.0,
         cat_power=1,
+        cat_len_power=0.0,
         params=None,
         sparse=None,
     ):
@@ -141,6 +142,9 @@ class ReactionNetwork:
         if not float(cat_power).is_integer() or int(cat_power) < 1:
             raise ValueError("cat_power must be a positive integer")
         self.cat_power = int(cat_power)
+        if not np.isfinite(cat_len_power) or cat_len_power < 0:
+            raise ValueError("cat_len_power must be a nonnegative float")
+        self.cat_len_power = float(cat_len_power)
         self.params = dict(params or {})
         # sparse mode: never materialize dense S/C/J. None -> auto for
         # large networks (dense S would be n_species x n_channels).
@@ -169,6 +173,15 @@ class ReactionNetwork:
         if not nonzero_inlet <= self.food:
             raise ValueError("food_inlet may only supply food species")
         self._cache = {}
+        # per-species catalytic potency weight (L/2)^cat_len_power for
+        # structural polymers (len>=2), 1.0 for everything else — food,
+        # activated monomers, waste, and unstructured species. At
+        # cat_len_power=0 every weight is exactly 1.0 (legacy flat-kappa
+        # behavior). Symmetric across both reaction directions, so
+        # detailed balance is untouched.
+        self.cat_weights = np.power(
+            np.clip(self.polymer_lengths, 2, None) / 2.0,
+            self.cat_len_power)
 
     # ------------------------------------------------------------------
     def _validate(self) -> None:
@@ -238,6 +251,16 @@ class ReactionNetwork:
         for i, s in self.structure.items():
             out[i] = len(s)
         return out
+
+    @property
+    def polymer_mask(self) -> np.ndarray:
+        """True for structural polymers (len >= 2); False for food,
+        activated monomers, waste, and species without structure
+        (e.g. benchmark reservoirs) — the set affected by CSTR
+        polymer retention."""
+        if "polymer_mask" not in self._cache:
+            self._cache["polymer_mask"] = self.polymer_lengths >= 2
+        return self._cache["polymer_mask"]
 
     # ---------------- derived arrays (cached) -------------------------
     def stoichiometry(self) -> np.ndarray:
@@ -339,7 +362,8 @@ class ReactionNetwork:
         kf, kr, gate_f, gate_r = self._rate_vectors()
         C = self.catalysis_matrix()
         cat = self.kappa * np.asarray(
-            C @ np.power(x, self.cat_power)).ravel()
+            C @ (self.cat_weights
+                 * np.power(x, self.cat_power))).ravel()
         boost_f = np.where(gate_f, eps, 1.0) + cat
         boost_r = np.where(gate_r, eps, 1.0) + cat
         mf = np.prod(x_app[Rf], axis=1)
@@ -377,7 +401,8 @@ class ReactionNetwork:
         bg_f = np.where(gate_f, eps, 1.0)
         bg_r = np.where(gate_r, eps, 1.0)
         Cx = np.asarray(
-            C @ np.power(x, self.cat_power)).ravel()
+            C @ (self.cat_weights
+                 * np.power(x, self.cat_power))).ravel()
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
 
@@ -403,10 +428,11 @@ class ReactionNetwork:
             # catalysts contribute via boost: d(k*mass*kappa*x_c^p)/dx_c
             cat_idx = np.nonzero(C[r])[0]
             if len(cat_idx):
-                # derivative of kappa * x_c^p is p * x_c^(p-1) — raw
-                # power, matching the unclipped rate law in rates();
-                # integer cat_power keeps this finite at any real x
-                dpow = (self.cat_power
+                # derivative of kappa * w_c * x_c^p is w_c * p *
+                # x_c^(p-1) — raw power, matching the unclipped rate
+                # law in rates(); integer cat_power keeps this finite
+                # at any real x
+                dpow = (self.cat_power * self.cat_weights[cat_idx]
                         * np.power(x[cat_idx], self.cat_power - 1))
                 Df[r, cat_idx] += kf[r] * mf[r] * self.kappa * dpow
                 Db[r, cat_idx] += kr[r] * mr[r] * self.kappa * dpow
@@ -438,7 +464,8 @@ class ReactionNetwork:
         bg_f = np.where(gate_f, eps, 1.0)
         bg_r = np.where(gate_r, eps, 1.0)
         Cx = np.asarray(
-            C @ np.power(x, self.cat_power)).ravel()
+            C @ (self.cat_weights
+                 * np.power(x, self.cat_power))).ravel()
         mf = np.prod(x_app[Rf], axis=1)
         mr = np.prod(x_app[Rr], axis=1)
 
@@ -468,6 +495,7 @@ class ReactionNetwork:
             if not mask.any():
                 continue
             dpow = (self.cat_power
+                    * self.cat_weights[np.where(mask, c, 0)]
                     * np.power(x[np.where(mask, c, 0)],
                                self.cat_power - 1))
             rows_f.append(rr[mask]); cols_f.append(c[mask])
@@ -487,16 +515,26 @@ class ReactionNetwork:
         x: np.ndarray,
         dilution: float = 0.0,
         eps: float | None = None,
+        retention: float = 0.0,
     ) -> np.ndarray:
-        """J = S (Df - Db) - dilution*I for the CSTR vector field."""
+        """J = S (Df - Db) - D*diag(1 - retention*polymer_mask).
+
+        retention is the CSTR polymer-retention fraction: species with
+        structure len >= 2 wash out at D*(1-retention); everything else
+        at D. retention=0 reproduces the homogeneous-dilution Jacobian.
+        """
         Df, Db = self.d_rates(x, eps)
+        if retention:
+            if not (0.0 <= retention < 1.0):
+                raise ValueError("retention must be in [0, 1)")
+            outflow = dilution * (1.0 - retention * self.polymer_mask)
+        else:
+            outflow = np.full(self.n_species, dilution)
         if self.use_sparse:
             import scipy.sparse as sp
             return (self.stoichiometry() @ (Df - Db)
-                    - dilution * sp.eye(self.n_species, format="csr"))
-        return self.stoichiometry() @ (Df - Db) - dilution * np.eye(
-            self.n_species
-        )
+                    - sp.diags(outflow, format="csr"))
+        return self.stoichiometry() @ (Df - Db) - np.diag(outflow)
 
     # ---------------- thermodynamics ----------------------------------
     def check_detailed_balance(self, tol: float = 1e-6) -> dict:
@@ -600,6 +638,7 @@ class ReactionNetwork:
             "kappa": self.kappa,
             "eps": self.eps,
             "cat_power": self.cat_power,
+            "cat_len_power": self.cat_len_power,
             "params": self.params,
             "channels": [
                 {
@@ -649,6 +688,7 @@ class ReactionNetwork:
             kappa=d["kappa"],
             eps=d["eps"],
             cat_power=d.get("cat_power", 1),
+            cat_len_power=d.get("cat_len_power", 0.0),
             params=d.get("params"),
         )
 
@@ -668,6 +708,7 @@ class ReactionNetwork:
             kappa=self.kappa,
             eps=self.eps,
             cat_power=self.cat_power,
+            cat_len_power=self.cat_len_power,
             params=self.params,
         )
         kw.update(overrides)

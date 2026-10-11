@@ -53,10 +53,19 @@ class ODEResult:
 
 
 def rhs_cstr(net: ReactionNetwork, x: np.ndarray, dilution: float,
-             eps: float | None = None) -> np.ndarray:
+             eps: float | None = None,
+             retention: float = 0.0) -> np.ndarray:
+    """CSTR vector field. retention is the polymer-retention fraction
+    (semi-permeable compartment): structural polymers (len>=2) wash
+    out at D*(1-retention), food/fuel/waste at D. retention=0 is the
+    homogeneous CSTR."""
     x = np.asarray(x, dtype=float)
-    return (net.stoichiometry() @ net.net_flux(x, eps)
-            + dilution * (net.food_inlet - x))
+    if retention:
+        outflow = dilution * (1.0 - retention * net.polymer_mask)
+        boundary = dilution * net.food_inlet - outflow * x
+    else:
+        boundary = dilution * (net.food_inlet - x)
+    return net.stoichiometry() @ net.net_flux(x, eps) + boundary
 
 
 def _scaled_residual(dxdz: np.ndarray, x: np.ndarray, atol, rtol):
@@ -67,6 +76,7 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
                         dilution: float, eps: float,
                         conv_atol: float, conv_rtol: float,
                         max_restarts: int = 2,
+                        retention: float = 0.0,
                         ) -> tuple[np.ndarray, np.ndarray, int, bool, str]:
     """Equilibrium seek for sparse networks: trust-region Newton with
     Krylov inner solves (least_squares trf/lsmr) — needs only sparse
@@ -86,10 +96,10 @@ def _krylov_equilibrium(net: ReactionNetwork, x0: np.ndarray,
     nfev = 0
 
     def rhs(y):
-        return rhs_cstr(net, y, dilution, eps)
+        return rhs_cstr(net, y, dilution, eps, retention)
 
     def jac(y):
-        return net.jacobian(y, dilution, eps)
+        return net.jacobian(y, dilution, eps, retention)
 
     def resid_ok(x):
         # a root in the negative orthant is a root of the polynomial
@@ -204,6 +214,7 @@ def integrate_cstr(
     polish: bool = True,
     osc_amp_tol: float = 0.05,
     neg_tol: float = 1e-6,
+    polymer_retention: float = 0.0,
 ) -> ODEResult:
     """Integrate CSTR to convergence in chunks, then certify.
 
@@ -218,6 +229,10 @@ def integrate_cstr(
     """
     if eps is None:
         eps = net.eps
+    if not (0.0 <= polymer_retention < 1.0):
+        raise ValueError("polymer_retention must be in [0, 1) — "
+                         "retention=1 is a closed compartment, not a "
+                         "CSTR")
     n = net.n_species
     if x0 is None:
         x0 = net.food_inlet.copy()
@@ -229,7 +244,8 @@ def integrate_cstr(
         # L=12). Trust-region Krylov equilibrium seek instead; no
         # trajectory => no oscillation classification.
         xk, resid, nfev_k, ok, msg = _krylov_equilibrium(
-            net, x, dilution, eps, conv_atol, conv_rtol)
+            net, x, dilution, eps, conv_atol, conv_rtol,
+            retention=polymer_retention)
         ttype = "STATIONARY" if ok else "UNRESOLVED"
         eig_re = None
         stability = "unchecked"
@@ -241,7 +257,7 @@ def integrate_cstr(
             # a truncated ARPACK spectrum cannot certify either way.
             from ..observables import spectral as _spectral
             eigs, spec_conv = _spectral.jacobian_eigs(
-                net, xk, dilution, eps)
+                net, xk, dilution, eps, retention=polymer_retention)
             if not spec_conv or not len(eigs) or \
                     not np.isfinite(eigs[0].real):
                 ttype, ok = "UNRESOLVED", False
@@ -262,7 +278,7 @@ def integrate_cstr(
         # letter-mass residual separately as the balance error
         if net.comp is not None:
             dm = net.comp.sum(axis=0) @ rhs_cstr(
-                net, xk, dilution, eps)
+                net, xk, dilution, eps, polymer_retention)
             feed = max(abs(net.feed_letters()), 1e-12)
             mat_err = float(np.max(np.abs(dm)) / feed)
         else:
@@ -284,10 +300,10 @@ def integrate_cstr(
         # (Invariant 4). The rate law is polynomial in x, so it is
         # well-defined for negative y; sustained negativity is a real
         # solver excursion and is flagged below, not hidden.
-        return rhs_cstr(net, y, dilution, eps)
+        return rhs_cstr(net, y, dilution, eps, polymer_retention)
 
     def jac(t, y):
-        return net.jacobian(y, dilution, eps)
+        return net.jacobian(y, dilution, eps, polymer_retention)
 
     ts: list[np.ndarray] = []
     xs: list[np.ndarray] = []
@@ -346,11 +362,26 @@ def integrate_cstr(
     # mass). Compare against the closed-form solution, not a numerical
     # derivative of the trajectory.
     if net.comp is not None:
-        m = net.comp.sum(axis=0) @ X.T
+        letter = net.comp.sum(axis=0)
+        m = letter @ X.T
         if dilution > 0:
-            m_pred = (net.feed_letters()
-                      + (m[0] - net.feed_letters())
-                      * np.exp(-dilution * t_all))
+            if polymer_retention:
+                # dM/dt = D*(feed - sum_i letter_i*(1-rho_i)*x_i): no
+                # scalar closed form once retention splits the
+                # outflow — integrate the predicted boundary rate
+                # along the recorded trajectory instead. Chunk-boundary
+                # duplicate timestamps contribute zero-width
+                # trapezoids, so no dedup needed.
+                outf = 1.0 - polymer_retention * net.polymer_mask
+                rate = dilution * (net.feed_letters()
+                                   - (letter * outf) @ X.T)
+                m_pred = m[0] + np.concatenate(
+                    [[0.0], np.cumsum(0.5 * (rate[1:] + rate[:-1])
+                                      * np.diff(t_all))])
+            else:
+                m_pred = (net.feed_letters()
+                          + (m[0] - net.feed_letters())
+                          * np.exp(-dilution * t_all))
         else:
             m_pred = np.full_like(m, m[0])
         mat_err = float(np.max(np.abs(m - m_pred))
@@ -375,21 +406,26 @@ def integrate_cstr(
             # sparse Jacobian by products, never factors it
             from scipy.optimize import least_squares
             sol_ls = least_squares(
-                lambda y: rhs_cstr(net, y, dilution, eps),
+                lambda y: rhs_cstr(net, y, dilution, eps,
+                                   polymer_retention),
                 x,
-                jac=lambda y: net.jacobian(y, dilution, eps),
+                jac=lambda y: net.jacobian(y, dilution, eps,
+                                           polymer_retention),
                 method="trf", tr_solver="lsmr",
                 xtol=1e-11, ftol=1e-11, gtol=1e-11, max_nfev=300)
             xp = sol_ls.x
             polish_ok = bool(sol_ls.success)   # lsmr can exit unconverged
         else:
             sol = scipy_root(
-                lambda y: rhs_cstr(net, y, dilution, eps),
-                x, jac=lambda y: net.jacobian(y, dilution, eps),
+                lambda y: rhs_cstr(net, y, dilution, eps,
+                                   polymer_retention),
+                x, jac=lambda y: net.jacobian(y, dilution, eps,
+                                              polymer_retention),
                 method="hybr")
             xp, polish_ok = sol.x, bool(sol.success)
-        pr = _scaled_residual(rhs_cstr(net, xp, dilution, eps),
-                              xp, conv_atol, conv_rtol)
+        pr = _scaled_residual(
+            rhs_cstr(net, xp, dilution, eps, polymer_retention),
+            xp, conv_atol, conv_rtol)
         # a polished root with significantly negative components is a
         # root of the polynomial dynamics, not a physical equilibrium —
         # reject rather than clip it into existence

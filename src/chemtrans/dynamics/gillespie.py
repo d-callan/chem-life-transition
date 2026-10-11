@@ -67,7 +67,8 @@ def _mk_offsets(parts: list[int]) -> tuple[int, ...]:
 
 def build_processes(net: ReactionNetwork, dilution: float,
                     eps: float | None = None,
-                    hazard_mode: str = "participants") -> list[Process]:
+                    hazard_mode: str = "participants",
+                    polymer_retention: float = 0.0) -> list[Process]:
     """Expand channels + boundary processes for the SSA.
 
     hazard_mode selects the cooperative-catalysis convention:
@@ -81,11 +82,19 @@ def build_processes(net: ReactionNetwork, dilution: float,
         rate law pointwise. Use to isolate whether a stochastic claim
         (small-V extinction, nucleation barriers) is physics or an
         artifact of the (n_c)_p zero at n_c <= 1.
+
+    polymer_retention is the semi-permeable-compartment fraction:
+    structural polymer (len>=2) dilution events run at rate
+    D*(1-rho); food/feed species at D. Catalyst hazards carry the
+    network's cat_weights (length-scaled potency), matching the ODE
+    rate law.
     """
     if hazard_mode not in ("participants", "functional"):
         raise ValueError(
             f"hazard_mode must be 'participants'|'functional', "
             f"got {hazard_mode!r}")
+    if not (0.0 <= polymer_retention < 1.0):
+        raise ValueError("polymer_retention must be in [0, 1)")
     if eps is None:
         eps = net.eps
     procs: list[Process] = []
@@ -111,11 +120,15 @@ def build_processes(net: ReactionNetwork, dilution: float,
             else:
                 cat_parts = ()
                 boost = (c, net.cat_power)
+            # length-weighted potency folds into the rate constant:
+            # identical multiplier on both directions, matching the
+            # ODE's symmetric catalysis (detailed balance untouched)
+            kcat = net.kappa * float(net.cat_weights[c])
             for direction, parts, delta, k in (
                     ("fwd", ch.factors("fwd") + cat_parts, fwd_delta,
-                     ch.k_f * net.kappa),
+                     ch.k_f * kcat),
                     ("rev", ch.factors("rev") + cat_parts, rev_delta,
-                     ch.k_r * net.kappa)):
+                     ch.k_r * kcat)):
                 if k > 0:
                     procs.append(Process(
                         rate=k, participants=parts,
@@ -128,10 +141,13 @@ def build_processes(net: ReactionNetwork, dilution: float,
                 procs.append(Process(
                     rate=dilution * net.food_inlet[i], participants=(),
                     offsets=(), delta=((i, 1),), kind="feed", channel=-1))
+        out_rates = dilution * (
+            1.0 - polymer_retention * net.polymer_mask)
         for i in range(net.n_species):
             procs.append(Process(
-                rate=dilution, participants=(i,), offsets=(0,),
-                delta=((i, -1),), kind="dilution", channel=-1))
+                rate=float(out_rates[i]), participants=(i,),
+                offsets=(0,), delta=((i, -1),), kind="dilution",
+                channel=-1))
     return procs
 
 
@@ -202,13 +218,15 @@ def simulate(
     record_dt: float | None = None,
     observers: tuple = (),
     hazard_mode: str = "participants",
+    polymer_retention: float = 0.0,
 ) -> SSAResult:
     """Run the exact SSA. See module docstring for conventions and
     `build_processes` for the hazard_mode catalysis convention."""
     rng = np.random.default_rng(seed)
     if eps is None:
         eps = net.eps
-    procs = build_processes(net, dilution, eps, hazard_mode=hazard_mode)
+    procs = build_processes(net, dilution, eps, hazard_mode=hazard_mode,
+                            polymer_retention=polymer_retention)
     n_species = net.n_species
 
     if n0 is None:

@@ -30,7 +30,17 @@ exact falling-factorial SSA.
    and dilution boundary terms.
 2. **Thermodynamic consistency.** `k_r` is derived from species free
    energies; `check_detailed_balance()` must pass. Catalysis is a
-   common multiplier `(eps + kappa*x_C)` on both directions.
+   common multiplier `(eps + kappa*w_C*x_C^p)` on both directions;
+   `w_C = (len(C)/2)^cat_len_power` is the length-scaled potency
+   weight (`cat_len_power=0` is the legacy flat-kappa law) and must
+   stay symmetric across directions so `k_f/k_r` is unaffected.
+2b. **Compartment retention.** `reactor.polymer_retention` (rho in
+   [0,1)) makes structural polymers (len>=2) wash out at `D*(1-rho)`
+   while food/fuel/waste dilute at `D` — a semi-permeable
+   compartment, not a change to internal stoichiometry. It must be
+   threaded identically through `rhs_cstr`, `net.jacobian`,
+   `spectral.jacobian_eigs`, and `gillespie.build_processes`/`simulate`
+   (dilution-process rates); rho=0 is the homogeneous CSTR.
 3. **Absorbing limit.** `eps=0` + non-food catalysts => zero polymer
    synthesis is reachable with no catalysts: dead state absorbing for
    synthesis channels (decay channels still run; they're `synth=False`).

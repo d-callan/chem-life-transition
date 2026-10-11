@@ -16,7 +16,8 @@ from ..networks.core import ReactionNetwork
 
 def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
                   eps: float | None = None,
-                  k_sparse: int = 6) -> tuple[np.ndarray, bool]:
+                  k_sparse: int = 6,
+                  retention: float = 0.0) -> tuple[np.ndarray, bool]:
     """Eigenvalues of the CSTR Jacobian at x, sorted by real part desc.
 
     Sparse networks: only the `k_sparse` rightmost eigenvalues via
@@ -32,7 +33,7 @@ def jacobian_eigs(net: ReactionNetwork, x: np.ndarray, dilution: float,
     # Jacobian at the TRUE state — no positivity clip (Invariant 4).
     # Callers certify x_eq only at nonnegativity tolerance, so spectral
     # diagnostics reflect the real linearization, not a clipped field.
-    J = net.jacobian(np.asarray(x, float), dilution, eps)
+    J = net.jacobian(np.asarray(x, float), dilution, eps, retention)
     if net.use_sparse:
         import scipy.sparse.linalg as spla
         n = net.n_species

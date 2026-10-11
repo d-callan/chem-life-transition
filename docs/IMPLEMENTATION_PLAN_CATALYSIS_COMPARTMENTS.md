@@ -1,5 +1,8 @@
 # Implementation Specification: Length-Weighted Catalysis & Compartmental Retention
 
+> **STATUS: IMPLEMENTED** (see §6 below for the as-built parameter
+> locations and the first pilot results).
+
 **Target Branch/Repo**: `chemtrans 2.0` (`/home/dcallan-adm/chem-life-transition`)  
 **Objective**: Introduce two physically-grounded prebiotic knobs to overcome the short-polymer trap (where 2-mers dominate all catalytic flux) and the open-dilution barrier (which penalizes long polymers exponentially):
 1. **Length-Weighted Catalytic Power** (`cat_len_power`, $\alpha \ge 0$): Catalytic acceleration scales with polymer chain length, modeling the physical requirement of chain length for stable catalytic folding.
@@ -224,3 +227,40 @@ Create a test protocol: `.devin/campaigns/pilot_assembly_knobs.json`:
 **Expected Hypothesis**:
 At $\alpha = 0, \rho = 0$, $O_{\text{assembly}} = 0$ (the existing null).  
 As $\alpha \ge 2.0$ and $\rho \ge 0.8$, the combination of high catalytic payoff for long chains and reduced dilution washout will drive non-zero concentration into length-5 and length-6 species, triggering the first non-zero $O_{\text{assembly}}$ signatures in the history of the repo.
+
+---
+
+## 6. As-Implemented Status & First Pilot Results
+
+### 6.1 Where the knobs landed
+
+| Knob | Type | Default | Plumbed through |
+|---|---|---|---|
+| `cat_len_power` (alpha >= 0) | generator spec | `0.0` | `polymer_network` -> `ReactionNetwork.cat_len_power` -> `cat_weights` -> `rates`, `d_rates` (dense+sparse), `jacobian`, `gillespie.build_processes` (rate constant in both hazard modes), `to_dict`/`from_dict`/`with_channels`, `params` record |
+| `polymer_retention` (rho in [0,1)) | reactor spec | `0.0` | `measure_run` -> `ode.integrate_cstr` (`rhs_cstr`, PTC + polish Jacobians, Krylov equilibrium seek), `spectral.jacobian_eigs`, `gillespie.build_processes`/`simulate` (dilution-process rate `D*(1-rho)`), `_multistability_block`, `_continuation_block`, `_competition_block`, abiotic-null calibration |
+
+- Retention mask: `net.polymer_mask` = species with `structure` length >= 2. Food monomers, `A*`, `W`, and unstructured (benchmark) species always dilute at `D`. Serial-dilution (`sd_map`/`sd_step`) is a different reactor protocol and is intentionally unchanged.
+- Material-balance diagnostic: at `rho > 0` the scalar closed form no longer applies (internal flux moves letters between food and polymer pools), so the check integrates the predicted boundary rate `D*(feed - sum letter_i*(1-rho_i)*x_i)` along the trajectory (trapezoid; duplicate chunk timestamps contribute zero-width intervals).
+- Provenance: `cat_len_power` enters `to_dict` -> `net.hash` and `params`; `polymer_retention` is recorded resolved in `rec["reactor"]`; both are in `task_identity` -> fresh `run_id`s. `AUDIT_ROUND` stays `r6` — defaults are bit-identical to prior code, so unchanged tasks produce unchanged numbers.
+- Sweeps: campaign `_set_path` accepts `generator.cat_len_power` and `reactor.polymer_retention` dotted paths with no whitelist changes.
+
+### 6.2 Verification performed
+
+- 92/92 pre-existing tests pass unchanged (bit-for-bit compatibility at defaults).
+- 18 new tests in `tests/test_length_catalysis_and_retention.py` (110 total): weight formula, catalyzed-only rate scaling, centered-FD `d_rates` at alpha=2, detailed balance, hash/serialization/knockout provenance, selective rhs/Jacobian outflow, retention material balance, absorbing limit at eps=0+rho, SSA rate tables in both hazard modes, invalid-value rejection.
+- End-to-end `measure_run` with both knobs: STATIONARY + certified `x_eq`, stable leading eig, event-time SSA replicates, strict JSON.
+
+### 6.3 Pilot `catret_l6` (64 records; `data/pilots/r6/catret_l6-b619f2902de2/`)
+
+Factorial `cat_len_power in {0,1,2,3}` x `polymer_retention in {0,0.5,0.8,0.95}`, L=6 polymer nets (`max_len=6`, `kappa=500`, `cat_power=2`, `eps=0`, `D=0.5`, dense init), 4 seeds (two shared with `assemblyl6`) + 8-IC multistability per cell.
+
+**What moved:**
+- **Retention strongly increases organized polymer mass**: m_poly ~0.28-0.33 at rho=0 -> 2.2-4.9 at rho=0.95 (~10-15x) on ignitable networks.
+- **Retention increases attractor multiplicity**: `catret|net1` 2->4 certified attractors, `e1land|net7` 1->3 as rho -> 0.95. First compartment-enables-heredity signal in the repo.
+- **Null topology stays null**: `catret|net0` is dead (m_poly=0, 0 attractors) across the whole grid — neither knob manufactures RAF structure.
+
+**What did NOT move (the important null):**
+- **High-assembly mass did not turn on.** Length-resolved x_eq on `net7` at rho=0.95: L=2 mass 2.68, L=3 mass 2.19, L=4-6 ~0. Retention accumulates mass but piles it at the *shortest retained lengths* — flat rho removes the washout penalty without creating a length gradient; `g_bond` thermodynamics still penalize each additional bond. `mass_signature_abs` = 0 everywhere.
+- **`cat_len_power` has almost no systematic effect** on m_poly or length distribution, and scrambles attractor counts non-monotonically. Mechanistic reading: the *abundant* catalysts are themselves short, so a 6-mer's 9x potency weight is moot when no 6-mer is ever synthesized — the knob reweights catalysts that exist, it cannot bootstrap ones that don't.
+
+**Interpretation (cautious):** the two knobs as designed do not produce high-assembly polymers. Retention alone amplifies whatever the RAF topology already produces — mostly short chains. Candidate next levers suggested by the data: (a) length-*graded* retention rho_i = rho(1 - 1/L_i) or a molecular-weight cutoff so long chains are retained preferentially; (b) `min_cat_len >= 3` hard threshold forcing catalysis through longer species; (c) sequence-specific catalytic competence rather than length-only. Each is a one-line/one-knob variant on the machinery now in place.

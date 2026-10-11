@@ -299,3 +299,35 @@ Key reconciliations to earlier entries:
 
 For the full audited claim status and physical interpretation, see
 `docs/HEADLINE_FINDINGS.md`.
+---
+
+## Catalysis-length & compartment-retention knobs (post-r6)
+
+Two tunable mechanisms were added per
+`docs/IMPLEMENTATION_PLAN_CATALYSIS_COMPARTMENTS.md` (now marked
+IMPLEMENTED with as-built locations):
+
+- `generator.cat_len_power` (alpha >= 0): catalyst potency weight
+  (len/2)^alpha — alpha=0 is the legacy flat-kappa law.
+- `reactor.polymer_retention` (rho in [0,1)): semi-permeable
+  compartment — polymers (len>=2) wash out at D*(1-rho), food/fuel/
+  waste at D. Threaded identically through ODE, Jacobian, spectral,
+  and SSA dilution hazards.
+
+Pilot `catret_l6` (64 records, `data/pilots/r6/catret_l6-*/`): 4x4
+factorial on L=6 RAF nets (kappa=500, cat_power=2, eps=0, D=0.5).
+
+- Retention raises m_poly ~10-15x (0.28 -> 4.87) and attractor count
+  (up to 4 certified basins on `catret|net1`) — a real
+  compartment-enables-multistability signal.
+- But the accumulated mass stays at L=2-3; L4-6 ~0 at every cell.
+  Flat retention has no length gradient and g_bond still taxes each
+  bond. `mass_signature_abs` = 0 everywhere.
+- `cat_len_power` has almost no effect: the abundant catalysts are
+  themselves short, so potency weights on never-synthesized 6-mers
+  cannot act. Dead nets stay dead under both knobs.
+
+Assembly remains null — now for a sharper reason: retention amplifies
+mass but not length, and potency weights cannot create the long
+catalysts they would reward. Next candidate levers: length-graded
+retention, min_cat_len threshold, or sequence-specific catalysis.
