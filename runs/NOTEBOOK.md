@@ -571,3 +571,28 @@ POSITIVE RESULT: semi-permeable retention alone (even mu=0) shifts
 internal sparsity 0.04 -> 0.72-0.78. Removing uniform CSTR dilution
 lets kinetic asymmetries concentrate mass on the network's fittest
 lineage — deterministic selection by boundary conditions.
+
+### SSA interiors wired (commit 416184c)
+
+interior="ssa": integer molecule counts per vesicle, exact
+falling-factorial Gillespie (gillespie.build_processes dilution=0) +
+permeation events + Euler volume at event times; binomial division on
+counts. Zero copies = absorbing state — the only mode with physical
+extinction/speciation.
+
+Scout battery (K2/L4, n_cells=8, mu=10, d_leak=0.05, omega=200,
+t_max=60, ~4-60s/run):
+- ODE interior speciation ~1e-10 -> SSA speciation 0.5-0.67: discrete
+  counts unlock real founder divergence.
+- m_init frontier: m=10 -> stochastic extinction (2 empty survivors);
+  m=30 -> spec 0.53 (ABAA vs ABAB lineages); m=60 -> spec 0.17
+  (convergence, all-folder winners). Noise-vs-throughput sweet spot.
+- Replicates: seed13 whole population EXTINCT; seed3 converged on
+  non-folder BBAB; seed7 split with ABAB winning twice.
+- VERDICT: speciation achieved but it is founder-effect DRIFT, not
+  adaptive selection — winners are a mix of folders (ABAB = the
+  deterministic attractor leaking through) and luck (BBAB, ABAA).
+  Divergence does not equal selection for function; to get adaptive
+  speciation, compartment fitness must couple to sequence identity
+  (e.g. osmotic contribution weighted by fold/template competence)
+  rather than bulk retained mass.
