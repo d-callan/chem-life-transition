@@ -66,7 +66,17 @@ class PopResult:
 
 
 class ProtocellPopulation:
-    """Vectorized population of competing vesicles on one network."""
+    """Vectorized population of competing vesicles on one network.
+
+    interior="ode"  — each vesicle is a deterministic mean-field ODE
+                      (concentrations; single attractor; no real
+                      extinction events).
+    interior="ssa"  — each vesicle carries integer molecule counts and
+                      fires exact falling-factorial Gillespie events
+                      (reactions + permeation).  Zero copies is an
+                      absorbing state; this is the only mode in which
+                      between-vesicle speciation can be physical.
+    """
 
     def __init__(self, net: ReactionNetwork, n_cells: int = 40,
                  v0: float = 1.0, v_lysis: float | None = None,
@@ -76,7 +86,9 @@ class ProtocellPopulation:
                  omega: float = 1000.0,
                  n_max: int | None = None,
                  chunk: float = 2.0, seed: int = 0,
-                 m_init: int = 40):
+                 m_init: int = 40,
+                 interior: str = "ode",
+                 hazard_mode: str = "participants"):
         self.net = net
         self.v0 = float(v0)
         self.v_lysis = (0.4 * v0) if v_lysis is None else float(v_lysis)
@@ -93,6 +105,13 @@ class ProtocellPopulation:
             raise ValueError("require v_lysis < v0 < v_div")
         if self.mu < 0 or self.d_leak < 0:
             raise ValueError("mu_growth and d_leak must be >= 0")
+        if interior not in ("ode", "ssa"):
+            raise ValueError("interior must be 'ode'|'ssa'")
+        if interior == "ssa" and net.k_inhibit > 0:
+            raise NotImplementedError(
+                "ssa interior does not yet model k_inhibit denominators")
+        self.interior = interior
+        self.hazard_mode = hazard_mode
 
         S = net.stoichiometry()
         self._S = np.asarray(S.todense()
@@ -112,13 +131,46 @@ class ProtocellPopulation:
         # of an abiotic soup), then gets fresh bath concentrations.
         n = net.n_species
         pool = np.where(~net.is_food)[0]
-        self.x = np.zeros((n_cells, n))
-        self.x[:, :] = self._x_bath[None, :]
         self.v = np.full(n_cells, self.v0)
-        p = np.full(len(pool), 1.0 / len(pool))
-        for j in range(n_cells):
-            counts = self.rng.multinomial(m_init, p)
-            self.x[j, pool] += counts / (self.v0 * self.omega)
+        if self.interior == "ssa":
+            from . import gillespie as g
+            self._ssa_procs = g.build_processes(
+                net, dilution=0.0, hazard_mode=hazard_mode)
+            # padded participant/offset/rate arrays for vectorized
+            # hazard evaluation inside the per-cell event loop
+            max_m = max((len(p.participants) for p in self._ssa_procs),
+                        default=1)
+            np_ = len(self._ssa_procs)
+            self._pp = -np.ones((np_, max_m), dtype=int)
+            self._off = np.zeros((np_, max_m), dtype=int)
+            self._rates = np.zeros(np_)
+            self._vol_pow = np.zeros(np_)   # exponent 1 - m
+            self._delta = np.zeros((np_, n), dtype=int)
+            for k, p in enumerate(self._ssa_procs):
+                m = len(p.participants)
+                self._pp[k, :m] = p.participants
+                self._off[k, :m] = p.offsets
+                self._rates[k] = p.rate
+                self._vol_pow[k] = 1 - m
+                for i, a in p.delta:
+                    self._delta[k, i] += a
+            self.n = np.zeros((n_cells, n), dtype=np.int64)
+            bath_counts = np.rint(self._x_bath * self.v0
+                                  * self.omega).astype(np.int64)
+            p_pool = np.full(len(pool), 1.0 / len(pool))
+            for j in range(n_cells):
+                self.n[j] = bath_counts
+                self.n[j, pool] += self.rng.multinomial(
+                    m_init, p_pool)
+            self.x = self.n / (self.v[:, None] * self.omega)
+        else:
+            self.n = None
+            self.x = np.zeros((n_cells, n))
+            self.x[:, :] = self._x_bath[None, :]
+            p_pool = np.full(len(pool), 1.0 / len(pool))
+            for j in range(n_cells):
+                counts = self.rng.multinomial(m_init, p_pool)
+                self.x[j, pool] += counts / (self.v0 * self.omega)
         self.n_divisions = 0
         self.n_lysis = 0
         self.n_initial = n_cells
@@ -188,6 +240,73 @@ class ProtocellPopulation:
         self.v = np.maximum(self.v, 0.0)
         return True
 
+    def _ssa_cell_chunk(self, j: int, dt: float, pi_bar: float):
+        """Exact Gillespie events for cell j over dt with the mean
+        field frozen.  Hazards: reaction processes from
+        gillespie.build_processes(dilution=0) plus permeation
+        influx/efflux.  Volume integrates dv/dt by Euler at each
+        event time (counts are unaffected by volume change —
+        dilution lives in the concentration n/(v*omega))."""
+        rng, net = self.rng, self.net
+        n = self.n[j].copy()
+        v = float(self.v[j])
+        V0w = self.v0 * self.omega
+        t, t_end = 0.0, dt
+        while t < t_end:
+            V = v * self.omega
+            # vectorized reaction hazards: prod_p (n_p - off) * V^{1-m}
+            f = n[self._pp.clip(0)] - self._off
+            f[self._pp < 0] = 1.0
+            infeasible = (f <= 0) & (self._pp >= 0)
+            h = self._rates * np.prod(np.maximum(f, 1), axis=1) \
+                * V ** self._vol_pow
+            h[infeasible.any(axis=1)] = 0.0
+            # permeation events: efflux per-molecule P*shape,
+            # influx zeroth-order P*x_bath*shape*V
+            shape = (self.v0 / max(v, 1e-12)) ** (1.0 / 3.0)
+            h_out = self._P * shape * n
+            h_in = self._P * self._x_bath * shape * V
+            # total rate
+            a_rxn = h.sum()
+            a_out = h_out.sum()
+            a_in = h_in.sum()
+            a0 = a_rxn + a_out + a_in
+            if a0 <= 0.0:
+                break
+            tau = rng.exponential(1.0 / a0)
+            step = min(tau, t_end - t)
+            # osmotic growth Euler step at event resolution
+            pi = n[self._retained].sum() / V
+            v += (self.mu * v * (pi - pi_bar)
+                  - self.d_leak * v) * step
+            if t + tau >= t_end:
+                break
+            t += tau
+            u = rng.random() * a0
+            if u < a_rxn:
+                k = int(np.searchsorted(np.cumsum(h), u))
+                n += self._delta[k]
+            elif u < a_rxn + a_out:
+                i = int(np.searchsorted(np.cumsum(h_out), u - a_rxn))
+                n[i] -= 1
+            else:
+                i = int(np.searchsorted(np.cumsum(h_in),
+                                        u - a_rxn - a_out))
+                n[i] += 1
+            n[n < 0] = 0
+        self.n[j] = n
+        self.v[j] = max(v, 0.0)
+
+    def _ssa_chunk(self, t_span: tuple[float, float]) -> bool:
+        pi = (self.n[:, self._retained].sum(axis=1)
+              / np.maximum(self.v * self.omega, 1e-12))
+        pi_bar = float(pi.mean()) if pi.size else 0.0
+        for j in range(len(self.v)):
+            self._ssa_cell_chunk(j, t_span[1] - t_span[0], pi_bar)
+        self.x = self.n / np.maximum(
+            self.v[:, None] * self.omega, 1e-12)
+        return True
+
     # -------------------------------------------------- events ----
     def _events(self):
         # lysis first: below-threshold cells burst
@@ -196,6 +315,8 @@ class ProtocellPopulation:
             self.n_lysis += int(dead.sum())
             keep = ~dead
             self.x, self.v = self.x[keep], self.v[keep]
+            if self.interior == "ssa":
+                self.n = self.n[keep]
         if len(self.v) == 0:
             return
         # division: above-threshold cells split binomially
@@ -204,22 +325,40 @@ class ProtocellPopulation:
             idx = np.where(split)[0]
             new_x, new_v = [], []
             for j in idx:
-                n_i = np.floor(self.x[j] * self.v[j] * self.omega
-                               + 0.5).astype(int)
-                n_a = self.rng.binomial(np.maximum(n_i, 0), 0.5)
-                xa = n_a / (self.v0 * self.omega)
-                xb = (n_i - n_a) / (self.v0 * self.omega)
-                # residual (sub-molecule) mass stays with daughter b
-                resid = np.maximum(
-                    self.x[j] - n_i / (self.v[j] * self.omega), 0.0)
-                xb += resid
-                self.x[j] = xa
+                if self.interior == "ssa":
+                    n_a = self.rng.binomial(
+                        np.maximum(self.n[j], 0), 0.5)
+                    n_b = self.n[j] - n_a
+                    self.n[j] = n_a
+                    new_x.append(n_b / (self.v0 * self.omega))
+                    self.x[j] = n_a / (self.v0 * self.omega)
+                    new_n = getattr(self, "_new_n", None)
+                    if new_n is None:
+                        self._new_n = []
+                    self._new_n.append(n_b)
+                else:
+                    n_i = np.floor(self.x[j] * self.v[j] * self.omega
+                                   + 0.5).astype(int)
+                    n_a = self.rng.binomial(np.maximum(n_i, 0), 0.5)
+                    xa = n_a / (self.v0 * self.omega)
+                    xb = (n_i - n_a) / (self.v0 * self.omega)
+                    # residual (sub-molecule) mass stays with daughter b
+                    resid = np.maximum(
+                        self.x[j] - n_i / (self.v[j] * self.omega),
+                        0.0)
+                    xb += resid
+                    self.x[j] = xa
+                    new_x.append(xb)
                 self.v[j] = self.v0
-                new_x.append(xb)
                 new_v.append(self.v0)
                 self.n_divisions += 1
             self.x = np.vstack([self.x] + [np.asarray(new_x)])
             self.v = np.concatenate([self.v, np.asarray(new_v)])
+            if self.interior == "ssa" and self._new_n:
+                self.n = np.vstack(
+                    [self.n] + [np.asarray(self._new_n,
+                                         dtype=np.int64)])
+                self._new_n = []
         # carrying capacity: flush lowest-pressure cells
         if len(self.v) > self.n_max:
             pi = self.x[:, self._retained].sum(axis=1)
@@ -227,6 +366,8 @@ class ProtocellPopulation:
             n_drop = len(self.v) - self.n_max
             self.n_lysis += n_drop
             self.x, self.v = self.x[keep], self.v[keep]
+            if self.interior == "ssa":
+                self.n = self.n[keep]
 
     # ---------------------------------------------------- driver --
     def run(self, t_max: float = 500.0) -> PopResult:
@@ -234,9 +375,11 @@ class ProtocellPopulation:
             float(self.x[:, self._retained].sum(axis=1).mean())
             if len(self.v) else 0.0]
         t, status, msg = 0.0, "ok", ""
+        integrate = (self._ssa_chunk if self.interior == "ssa"
+                     else self._integrate_chunk)
         while t < t_max - 1e-12:
             dt_chunk = min(self.chunk, t_max - t)
-            if not self._integrate_chunk((t, t + dt_chunk)):
+            if not integrate((t, t + dt_chunk)):
                 status, msg = "UNRESOLVED", "solver failed on chunk"
                 return self._result(t, t_hist, n_hist, pi_hist,
                                     status, msg)

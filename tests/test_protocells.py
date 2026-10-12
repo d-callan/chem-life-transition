@@ -151,3 +151,36 @@ def test_measure_run_protocell_population():
                         "signature"}
     sig = pop["signature"]
     assert 0 <= sig["n_signature_cells"] <= pop["n_alive"]
+
+
+def test_ssa_interior_count_space():
+    net = _net()
+    pop = ppop.ProtocellPopulation(
+        net, n_cells=4, interior="ssa", m_init=20, seed=3)
+    assert pop.n.dtype == np.int64
+    # trapped molecules present as integers
+    assert pop.n[:, ~net.is_food].sum() == 4 * 20
+
+
+def test_ssa_chunk_events_are_discrete():
+    net = _net()
+    pop = ppop.ProtocellPopulation(
+        net, n_cells=3, interior="ssa", m_init=30, chunk=2.0, seed=5)
+    n0 = pop.n.copy()
+    pop._ssa_chunk((0.0, 2.0))
+    # counts stay integer and nonnegative
+    assert np.all(pop.n >= 0)
+    assert pop.n.dtype == np.int64
+
+
+def test_ssa_speciation_possible():
+    net = _net()
+    pop = ppop.ProtocellPopulation(
+        net, n_cells=6, interior="ssa", mu_growth=10.0, d_leak=0.05,
+        omega=200.0, n_max=10, m_init=30, chunk=5.0, seed=9)
+    res = pop.run(t_max=30.0)
+    assert res.status in {"ok", "EXTINCT"}
+    if res.x_cells.shape[0] >= 2:
+        si = ppop.speciation_index(res.x_cells,
+                                   np.asarray(net.polymer_lengths) >= 3)
+        assert si is None or 0.0 <= si <= 1.0

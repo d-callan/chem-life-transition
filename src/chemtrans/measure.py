@@ -403,7 +403,10 @@ def measure_run(task: dict) -> dict:
                    else None),
             chunk=float(reactor.get("chunk", 2.0)),
             seed=derive_seed(seed_key + "|pop"),
-            m_init=int(reactor.get("m_init", 40)))
+            m_init=int(reactor.get("m_init", 40)),
+            interior=str(reactor.get("interior", "ode")),
+            hazard_mode=str(reactor.get(
+                "hazard_mode", "participants")))
         res = pop.run(t_max=float(reactor.get("t_max", 500.0)))
         retained = np.asarray(net.polymer_lengths, float) >= 3
         Ls = sorted({int(l) for l in net.polymer_lengths if l >= 3})
