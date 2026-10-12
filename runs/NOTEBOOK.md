@@ -596,3 +596,31 @@ t_max=60, ~4-60s/run):
   speciation, compartment fitness must couple to sequence identity
   (e.g. osmotic contribution weighted by fold/template competence)
   rather than bulk retained mass.
+
+### Identity-coupled growth (HEURISTIC, mu_func)
+
+Added `reactor.mu_func` / `ProtocellPopulation(mu_func=...)`: second
+growth term dv += mu_func*v*(F_j - F_bar) with F_j = sum f_fold(s)*x_s
+over retained species — lumped proxy for ribozyme-catalyzed membrane
+synthesis (Adamala/Szostak). Documented inline as NOT colligative
+physics; osmosis stays correctly sequence-blind under `mu`.
+
+Scouts (K2/L4, ssa, omega=200, m_init=30, n_cells=8, d_leak=0.05):
+- mu=10, muf=10: population thins (3-6 alive), foldwin ~0-1 — term
+  too weak vs colligative Pi (ff ~ 0.73*x_ret vs Pi ~ x_ret scale).
+- mu=0, muf=20/60 (pure identity): UNIVERSAL EXTINCTION — cold-start
+  problem: no cell has functional mass at encapsulation, F_j-F_bar~0,
+  d_leak lyses all. Mass term is the bootstrap; function can only
+  refine.
+- mu=10 muf=40 / mu=5 muf=20: winner-take-all collapse — first cell
+  to stochastically grab folders crushes all below-mean cells;
+  survivors 1-4, winners still mostly non-folders (ABAA).
+
+VERDICT: identity-coupled growth does not produce sustained adaptive
+speciation at these scales — it amplifies first-mover drift instead.
+Root cause: interiors converge to the same attractor, so no
+persistent identity differential exists to select on; F_j-F_bar is
+zero-sum relative fitness. What's missing vs real protocell
+evolution: heritable lineage structure (function regenerating across
+generations, lineage-correlated fitness) — not instantaneous
+composition differences.
