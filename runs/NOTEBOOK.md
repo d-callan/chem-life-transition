@@ -545,3 +545,29 @@ Hypothesis under test in `protocell_selection_l6`: does smaller omega
 sequence-level speciation / MA>=5 signature cells? If not, selection
 of sequences requires identity-coupled growth (e.g. growth reward
 tied to specific functional sequences, not bulk polymer mass).
+
+### Protocell scout battery 2 (speciation stress-test)
+
+Campaign `protocell_selection_l6` died mid-run (6/32 records, all net0);
+records show mu<=2: div=0 (homogenization precedes growth
+differential), speciation ~1e-10, but intra-cell L6 sparsity 0.72
+(vs bulk CSTR 0.04). Direct scouts (K2/L4, K3/L4, n_cells=12,
+omega=200, t_max=80, ~2-15s each):
+
+- K2/L4 mu=2: EXTINCT (d_leak killed all before growth).
+- K2/L4 mu=10: 37 divisions, 25 lyses, capacity reached — speciation
+  still only 0.0016. mu=40: no divisions, L4 flat (0.035) — growth
+  outpaces polymer accumulation, dilutes everything.
+- K3/L4 mu=40: 5 survivors, L4 sparsity 0.78, speciation 1e-4.
+
+VERDICT: same-lineage convergence is NOT a small-alphabet artifact —
+it is structural. Mean-field ODE per cell is deterministic; binomial
+partition noise at division (~tens of molecules) cannot overcome
+single-attractor convergence. True between-cell speciation requires
+discrete SSA interiors or identity-coupled growth (fitness = WHICH
+sequences, not how much mass).
+
+POSITIVE RESULT: semi-permeable retention alone (even mu=0) shifts
+internal sparsity 0.04 -> 0.72-0.78. Removing uniform CSTR dilution
+lets kinetic asymmetries concentrate mass on the network's fittest
+lineage — deterministic selection by boundary conditions.
