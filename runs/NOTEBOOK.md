@@ -624,3 +624,25 @@ zero-sum relative fitness. What's missing vs real protocell
 evolution: heritable lineage structure (function regenerating across
 generations, lineage-correlated fitness) — not instantaneous
 composition differences.
+
+### Encapsulation statistics (Poisson trap analysis, L6 templated soup)
+
+Bulk equilibrium: 10 MA>=5 species, total conc 0.0021, 5
+complementary pairs (minimal self-templating seeds).
+Poisson trapping at count-scale omega:
+- P(>=1 MA5 molecule): 0.35 (omega=200) / 0.88 (omega=1000)
+  -> ~3 or ~1 vesicles. Trivial criterion, met instantly.
+- P(complementary PAIR co-trapped — the viable-seed criterion):
+  0.008 (omega=200) / 0.166 (omega=1000) -> ~120 / ~6 vesicles.
+  40x rarer: joint event, scales as x_a*x_b not x.
+- SSA runs confirm trapping != persistence: trapped MA5 molecules
+  hydrolyze; only pairs could regenerate, and none persisted.
+
+Alphabet/length scaling (why the toy can't extrapolate):
+pair probability ~ sum_pairs (x_a*omega)(x_b*omega), quadratic in
+per-species concentration ~ 1/pool. K=4 L=6 (4096 isomers) -> ~1e4-1e5
+vesicles for one viable seed; L~40 replicators (~1e24 isomers) ->
+chance encapsulation is thermodynamically impossible. Prebiotic
+replication must start at enumerable sequence lengths; amplification
+to high assembly requires a lineage that REGENERATES its tail, not a
+trap that samples it.
