@@ -63,6 +63,11 @@ class PopResult:
     pi_hist: list                # mean osmotic pressure over time
     status: str                  # "ok" | "EXTINCT" | "UNRESOLVED"
     message: str = ""
+    # genealogy observables
+    n_lineages: int = 0              # distinct founding ancestors alive
+    dominant_lineage_share: float = 0.0
+    max_generation: int = 0
+    mean_split_similarity: float | None = None   # daughter fidelity
 
 
 class ProtocellPopulation:
@@ -88,12 +93,14 @@ class ProtocellPopulation:
                  chunk: float = 2.0, seed: int = 0,
                  m_init: int = 40,
                  interior: str = "ode",
-                 hazard_mode: str = "participants"):
+                 hazard_mode: str = "participants",
+                 mu_func: float = 0.0):
         self.net = net
         self.v0 = float(v0)
         self.v_lysis = (0.4 * v0) if v_lysis is None else float(v_lysis)
         self.v_div = (2.0 * v0) if v_div is None else float(v_div)
         self.mu = float(mu_growth)
+        self.mu_func = float(mu_func)
         self.d_leak = float(d_leak)
         self.omega = float(omega)
         self.n_max = int(n_max) if n_max else 4 * int(n_cells)
@@ -103,8 +110,9 @@ class ProtocellPopulation:
             raise ValueError("chunk must be > 0")
         if self.v_lysis >= self.v0 or self.v_div <= self.v0:
             raise ValueError("require v_lysis < v0 < v_div")
-        if self.mu < 0 or self.d_leak < 0:
-            raise ValueError("mu_growth and d_leak must be >= 0")
+        if self.mu < 0 or self.d_leak < 0 or self.mu_func < 0:
+            raise ValueError(
+                "mu_growth, mu_func and d_leak must be >= 0")
         if interior not in ("ode", "ssa"):
             raise ValueError("interior must be 'ode'|'ssa'")
         if interior == "ssa" and net.k_inhibit > 0:
@@ -123,6 +131,29 @@ class ProtocellPopulation:
         self._P = np.where(L <= 1, p_fast,
                            np.where(L == 2, p_dimer, p_polymer))
         self._retained = L >= 3
+        # HEURISTIC — identity-coupled growth: `mu_func` weights each
+        # retained species by its folding competence f_fold(s) and
+        # adds a second growth term to dv/dt (applied below in _rhs /
+        # _ssa_cell_chunk).  Physical story: osmotic swelling itself
+        # is colligative (sequence-blind particle counting, correctly
+        # carried by `mu`); this term is a *lumped proxy* for
+        # ribozyme-catalyzed membrane synthesis — the Adamala/
+        # Szostak-style scenario where a functional polymer catalyzes
+        # lipid production, so compartment fitness sees WHICH
+        # sequences it hosts, not just how much mass.  It is NOT
+        # colligative physics and must be reported as an approximation.
+        if self.mu_func > 0.0:
+            from ..networks import generators as _gen
+            prm = net.params
+            dgf = float(prm.get("delta_g_fold", 0.0))
+            dgfmm = float(prm.get("delta_g_fold_mm", 2.0))
+            dgl = float(prm.get("delta_g_loop", 1.0))
+            self._f_fold = np.array([
+                _gen.folded_fraction(str(s), dgf, dgfmm, dgl)
+                if (L[i] >= 3 and dgf > 0.0) else 0.0
+                for i, s in enumerate(net.species)])
+        else:
+            self._f_fold = np.zeros(net.n_species)
         # external bath concentrations: the network's feed boundary
         self._x_bath = np.maximum(np.asarray(net.food_inlet, float), 0.0)
 
@@ -174,6 +205,14 @@ class ProtocellPopulation:
         self.n_divisions = 0
         self.n_lysis = 0
         self.n_initial = n_cells
+        # genealogy: root_id = founding-ancestor index (daughters keep
+        # the mother's root -> lineage = set of cells sharing a root);
+        # gen = division depth from the founder.  split_sims records
+        # mother->daughter composition cosine similarity at each
+        # division — the heredity observable.
+        self.root = np.arange(n_cells)
+        self.gen = np.zeros(n_cells, dtype=int)
+        self.split_sims: list[float] = []
 
     # ------------------------------------------------ dynamics ----
     def _rhs(self, x: np.ndarray, v: np.ndarray):
@@ -186,10 +225,18 @@ class ProtocellPopulation:
         shape = (self.v0 / np.maximum(v, 1e-12)) ** (1.0 / 3.0)
         dx += (self._P[None, :] * (self._x_bath[None, :] - x)
                * shape[:, None])
-        # osmotic pressure + competitive growth
+        # osmotic pressure + competitive growth (colligative,
+        # sequence-blind particle count)
         pi = x[:, self._retained].sum(axis=1)
         pi_bar = pi.mean() if n else 0.0
         dv = self.mu * v * (pi - pi_bar) - self.d_leak * v
+        # HEURISTIC identity-coupled growth (see __init__ note):
+        # fold-competent polymer proxy for catalyzed membrane
+        # synthesis — fitness sees sequence identity
+        if self.mu_func > 0.0:
+            ff = x @ self._f_fold
+            ff_bar = ff.mean() if n else 0.0
+            dv = dv + self.mu_func * v * (ff - ff_bar)
         # growth dilutes / shrinkage concentrates internal species
         dx -= (dv / np.maximum(v, 1e-12))[:, None] * x
         return dx, dv
@@ -240,7 +287,8 @@ class ProtocellPopulation:
         self.v = np.maximum(self.v, 0.0)
         return True
 
-    def _ssa_cell_chunk(self, j: int, dt: float, pi_bar: float):
+    def _ssa_cell_chunk(self, j: int, dt: float, pi_bar: float,
+                      ff_bar: float = 0.0):
         """Exact Gillespie events for cell j over dt with the mean
         field frozen.  Hazards: reaction processes from
         gillespie.build_processes(dilution=0) plus permeation
@@ -277,8 +325,14 @@ class ProtocellPopulation:
             step = min(tau, t_end - t)
             # osmotic growth Euler step at event resolution
             pi = n[self._retained].sum() / V
-            v += (self.mu * v * (pi - pi_bar)
-                  - self.d_leak * v) * step
+            dv = (self.mu * v * (pi - pi_bar) - self.d_leak * v)
+            if self.mu_func > 0.0:
+                # HEURISTIC identity-coupled growth (see __init__):
+                # fold-weighted concentration proxy for catalyzed
+                # membrane synthesis; mean field frozen per chunk
+                ff = float((n / V) @ self._f_fold)
+                dv += self.mu_func * v * (ff - ff_bar)
+            v += dv * step
             if t + tau >= t_end:
                 break
             t += tau
@@ -301,8 +355,14 @@ class ProtocellPopulation:
         pi = (self.n[:, self._retained].sum(axis=1)
               / np.maximum(self.v * self.omega, 1e-12))
         pi_bar = float(pi.mean()) if pi.size else 0.0
+        ff_bar = 0.0
+        if self.mu_func > 0.0:
+            ff = (self.n / np.maximum(self.v[:, None] * self.omega,
+                                      1e-12)) @ self._f_fold
+            ff_bar = float(ff.mean())
         for j in range(len(self.v)):
-            self._ssa_cell_chunk(j, t_span[1] - t_span[0], pi_bar)
+            self._ssa_cell_chunk(j, t_span[1] - t_span[0], pi_bar,
+                                 ff_bar)
         self.x = self.n / np.maximum(
             self.v[:, None] * self.omega, 1e-12)
         return True
@@ -315,6 +375,7 @@ class ProtocellPopulation:
             self.n_lysis += int(dead.sum())
             keep = ~dead
             self.x, self.v = self.x[keep], self.v[keep]
+            self.root, self.gen = self.root[keep], self.gen[keep]
             if self.interior == "ssa":
                 self.n = self.n[keep]
         if len(self.v) == 0:
@@ -323,15 +384,17 @@ class ProtocellPopulation:
         split = self.v >= self.v_div
         if np.any(split):
             idx = np.where(split)[0]
-            new_x, new_v = [], []
+            new_x, new_v, new_root, new_gen = [], [], [], []
             for j in idx:
                 if self.interior == "ssa":
                     n_a = self.rng.binomial(
                         np.maximum(self.n[j], 0), 0.5)
                     n_b = self.n[j] - n_a
                     self.n[j] = n_a
-                    new_x.append(n_b / (self.v0 * self.omega))
-                    self.x[j] = n_a / (self.v0 * self.omega)
+                    xa = n_a / (self.v0 * self.omega)
+                    xb = n_b / (self.v0 * self.omega)
+                    new_x.append(xb)
+                    self.x[j] = xa
                     new_n = getattr(self, "_new_n", None)
                     if new_n is None:
                         self._new_n = []
@@ -349,11 +412,24 @@ class ProtocellPopulation:
                     xb += resid
                     self.x[j] = xa
                     new_x.append(xb)
+                # heredity observable: cosine similarity between the
+                # two daughter interiors over the retained pool
+                ra, rb = xa[self._retained], xb[self._retained]
+                na, nb = np.linalg.norm(ra), np.linalg.norm(rb)
+                if na > 1e-12 and nb > 1e-12:
+                    self.split_sims.append(float(ra @ rb / (na * nb)))
+                # both daughters belong to the mother's lineage
+                new_root.append(self.root[j])
+                new_gen.append(self.gen[j] + 1)
                 self.v[j] = self.v0
                 new_v.append(self.v0)
                 self.n_divisions += 1
+            # mother becomes daughter A: bump her generation too
+            self.gen[idx] += 1
             self.x = np.vstack([self.x] + [np.asarray(new_x)])
             self.v = np.concatenate([self.v, np.asarray(new_v)])
+            self.root = np.concatenate([self.root, new_root])
+            self.gen = np.concatenate([self.gen, new_gen])
             if self.interior == "ssa" and self._new_n:
                 self.n = np.vstack(
                     [self.n] + [np.asarray(self._new_n,
@@ -366,6 +442,7 @@ class ProtocellPopulation:
             n_drop = len(self.v) - self.n_max
             self.n_lysis += n_drop
             self.x, self.v = self.x[keep], self.v[keep]
+            self.root, self.gen = self.root[keep], self.gen[keep]
             if self.interior == "ssa":
                 self.n = self.n[keep]
 
@@ -400,12 +477,24 @@ class ProtocellPopulation:
         return self._result(t, t_hist, n_hist, pi_hist, status, msg)
 
     def _result(self, t, t_hist, n_hist, pi_hist, status, msg):
+        if len(self.v):
+            _, counts = np.unique(self.root, return_counts=True)
+            dom = float(counts.max() / counts.sum())
+            n_lin = int(len(counts))
+            maxgen = int(self.gen.max())
+        else:
+            dom, n_lin, maxgen = 0.0, 0, 0
         return PopResult(
             x_cells=self.x.copy(), v_cells=self.v.copy(),
             n_divisions=self.n_divisions, n_lysis=self.n_lysis,
             n_births=self.n_divisions, n_initial=self.n_initial,
             t=np.asarray(t_hist), n_alive_hist=n_hist,
-            pi_hist=pi_hist, status=status, message=msg)
+            pi_hist=pi_hist, status=status, message=msg,
+            n_lineages=n_lin,
+            dominant_lineage_share=dom,
+            max_generation=maxgen,
+            mean_split_similarity=(float(np.mean(self.split_sims))
+                                   if self.split_sims else None))
 
 
 # ------------------------------------------------- observables ----

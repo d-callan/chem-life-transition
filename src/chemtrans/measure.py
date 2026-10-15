@@ -406,7 +406,8 @@ def measure_run(task: dict) -> dict:
             m_init=int(reactor.get("m_init", 40)),
             interior=str(reactor.get("interior", "ode")),
             hazard_mode=str(reactor.get(
-                "hazard_mode", "participants")))
+                "hazard_mode", "participants")),
+            mu_func=float(reactor.get("mu_func", 0.0)))
         res = pop.run(t_max=float(reactor.get("t_max", 500.0)))
         retained = np.asarray(net.polymer_lengths, float) >= 3
         Ls = sorted({int(l) for l in net.polymer_lengths if l >= 3})
@@ -427,6 +428,10 @@ def measure_run(task: dict) -> dict:
             "n_divisions": res.n_divisions,
             "n_lysis": res.n_lysis,
             "n_alive_hist": res.n_alive_hist,
+            "n_lineages": res.n_lineages,
+            "dominant_lineage_share": res.dominant_lineage_share,
+            "max_generation": res.max_generation,
+            "mean_split_similarity": res.mean_split_similarity,
             "speciation_index": ppop.speciation_index(
                 res.x_cells, retained),
             "per_cell_sparsity": ppop.per_cell_sparsity(
