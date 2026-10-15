@@ -77,3 +77,37 @@ To advance beyond "quenched-disorder finite-size crossover" to a rigorous physic
    - The $R^2 = 0.9995$ exponential volume scaling currently confirmed on seed `e2coop|s3` must be measured across an ensemble of $\ge 30$ independent network topologies to determine whether the metastability barrier is generic or seed-dependent.
 3. **Uncoupled Order Parameters**:
    - Future experimental protocols must retire `mass_raf` as a continuous order parameter and standardize on $m_{\text{poly}}$ (non-food monomer mass concentration) or catalytic flux $\Phi_{\text{cat}}$ to prevent artificial saturation at $\approx 1.0$.
+
+---
+
+## Round 7+ Update: Mechanism Deep-Dives — Can Recognition, Folding, or Compartments Prune the Soup?
+
+**Epoch**: `r7` | **Commits**: `1192868`, `416184c`, `e8a91bb`, `d790d6d`, `e605bf2`
+**Question**: after the audited campaigns established ignition/multistability, can *any* mechanism in this model family concentrate a winning sequence lineage — the step from high-assembly soup to life-like sequence selection?
+
+### Summary of mechanism tests (all cheap scouts + one campaign, K2/L6 unless noted)
+
+| Mechanism | Implementation | Result | Verdict |
+|---|---|---|---|
+| Base-pairing templated ligation | `templated_ligation`, `delta_g_pair` sweep (`template_lig_l6`, 80 cells) | Sparsity *dropped* 0.85→0.05; N_eff rose ~2→52 | **INVERTED**: complementarity is a symmetry, not a selector — every sequence has a complement, catalysis equalizes |
+| Folding-competence gate | `f_fold(T)` stem-loop Boltzmann weight on template edges (`folding_l6`, 40 cells) | Flat across delta_g_fold 0→5 | **NULL**: gate restricts who templates, not what gets made; coverage stays complete |
+| Non-pairing monomer C | K=3 alphabet, `purify_l5`/`K3/L4` scout | templated purity 0.46 < blind 0.88 | **NULL**: blind topological lottery out-purifies recognition |
+| Recognition stringency | uncapped w_max, perfect-only w_min, kappa 50↔500 | identical flat distributions | **NULL**: not a cap/saturation artifact — complete symmetric coverage |
+| Initial-condition asymmetry | 8 asymmetric ICs, 10-vesicle encapsulation scout | all converge to one attractor | **NULL**: single dominant basin; passive trapping is not a bottleneck |
+| Osmotic protocell competition | `protocell_population` ODE interior (lipid-stealing, division, lysis) | real divisions/lysis, speciation ~1e-10 | **NULL for speciation**: reward is colligative/sequence-blind |
+| SSA interiors (discrete counts) | `interior="ssa"` exact Gillespie per vesicle | **speciation 0.5–0.67**; extinctions real | **PARTIAL**: true founder-drift divergence — but winners are luck, not function |
+| Identity-coupled growth | `mu_func` fold-weighted growth term (heuristic) | pure → extinction; balanced → first-mover collapse | **NULL**: no sustained identity differential exists to select on; amplifies founder luck |
+| Poisson trap statistics | analytic + equilibrium concentrations | ≥1 MA≥5 molecule: ~3 vesicles; complementary pair seed: ~120 | **MIXED**: single molecules cheap to trap but decay; viable seeds 40x rarer; scaling is quadratic in dilution, exponential in length |
+
+### The two durable positive findings
+
+1. **Semi-permeable retention prunes deterministically.** Removing uniform CSTR dilution and trapping L≥3 species shifts interior sequence sparsity from ~0.04 to ~0.7+ (at long timescale). Selection *by boundary conditions* — convergent (same winner in every cell) and parameter-sensitive (growth dilution at mu=40 flattens it; purification is a transient that needs time).
+2. **Discrete molecule counts create real founder effects.** SSA interiors produce speciation ~0.5 vs ODE's ~1e-10 — extinction and lineage lock-in are genuine absorbing-state physics unavailable to mean field.
+
+### The distilled negative result
+
+Every mechanism tested selects *something* — but never for sustained sequence function. Osmosis is colligative (blind), encapsulation is drift (lucky), identity-coupled growth amplifies first-mover luck into collapse. The missing ingredient is **heredity within lineages**: nothing makes a daughter's interior resemble its mother long enough for cumulative selection. This is an architectural gap (lineage tracking across generations), not a parameter.
+
+### The Assembly-Theory answer
+
+Protocells did **not** drive MA≥5 species into detectable abundance — they eliminated them (trapped molecules hydrolyze; sub-single-molecule species are never inside to begin with). Chance encapsulation of a viable complementary-pair seed costs ~10² vesicles at L=6 but scales as ~1/pool² — thermodynamically impossible at realistic replicator lengths. Compartments cannot bootstrap the high-assembly transition; they can only amplify a lineage that already regenerates its own tail.
