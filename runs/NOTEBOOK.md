@@ -646,3 +646,13 @@ chance encapsulation is thermodynamically impossible. Prebiotic
 replication must start at enumerable sequence lengths; amplification
 to high assembly requires a lineage that REGENERATES its tail, not a
 trap that samples it.
+
+### Lineage tracking (commit pending)
+
+root_id/gen per vesicle; daughters inherit mother's root. Observables:
+n_lineages, dominant_lineage_share, max_generation,
+mean_split_similarity. First scout (ssa, mu=10, omega=200): 5
+coexisting lineages, dom share 0.27, maxgen 2, daughter similarity
+0.9996 — partition is highly faithful (twins), so interior divergence
+comes from stochastic dynamics, not split noise. Lineages COEXIST
+rather than one sweeping to fixation — confirms drift-only fitness.
